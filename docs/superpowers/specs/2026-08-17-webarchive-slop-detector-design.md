@@ -40,7 +40,7 @@ The normal output remains terminal-only and human-readable. It presents per-mode
 
 The worker uses MPS when available and falls back to CPU with a visible warning. Models run sequentially and release references before the next model.
 
-Long article text is split at natural text boundaries into model-safe chunks. The report includes the model-level results and explains how its final text score is derived from chunks. Images are evaluated independently; their artificial/human result is never added to a text score.
+Long article text is split at natural text boundaries into one shared set of model-safe chunks, sized for the narrowest token window among the detectors. Every text detector scores that same partition, so per-model scores are means over identical units and can be compared chunk by chunk; the report states the chunk-level agreement between probability detectors as Cohen's kappa. The report includes the model-level results and explains how its final text score is derived from chunks. Images are evaluated independently; their artificial/human result is never added to a text score.
 
 Metadata heuristics inspect available EXIF, XMP, PNG text chunks, and similar container metadata for generator/software fields. A missing field is neutral rather than evidence of human origin. Metadata findings are labeled as heuristics, not detector predictions.
 

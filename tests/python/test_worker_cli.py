@@ -201,10 +201,8 @@ def test_agreement_between_detectors_is_reported_as_kappa(
 
     warnings = json.loads(capsys.readouterr().out)["warnings"]
     agreement = next(note for note in warnings if "kappa" in note)
-    assert "Glyph and Vanguard" in agreement
+    assert "Glyph and Vanguard agree on 0 of 4 shared chunks" in agreement
     assert "-1.00" in agreement
-    assert "contradict" in agreement
-    assert "4 shared chunks" in agreement
 
 
 def test_editlens_is_left_out_of_the_agreement_statistic(stub_worker, capsys, tmp_path):
@@ -235,3 +233,23 @@ def test_no_agreement_note_when_only_one_detector_scored(stub_worker, capsys, tm
 
     warnings = json.loads(capsys.readouterr().out)["warnings"]
     assert not any("kappa" in note for note in warnings)
+
+
+def test_agreement_note_refuses_to_read_meaning_into_a_degenerate_kappa(
+    stub_worker, capsys, tmp_path
+):
+    stub_worker.setattr(
+        "slop_detector.main.run_text_detectors",
+        lambda *args: [
+            DetectorResult("Glyph", 0.87, "x", "14 chunks", [0.9] * 13 + [0.04]),
+            DetectorResult("Vanguard", 0.08, "y", "14 chunks", [0.05] * 14),
+        ],
+    )
+
+    main(["--archive", str(tmp_path / "page.webarchive")])
+
+    warnings = json.loads(capsys.readouterr().out)["warnings"]
+    note = next(note for note in warnings if "Glyph and Vanguard" in note)
+    assert "agree on 1 of 14 shared chunks" in note
+    assert "says nothing here" in note
+    assert "contradict each other on 13" in note

@@ -10,7 +10,7 @@ from .contracts import RunReport, RunRequest
 from .models import (
     EDITLENS_NAME,
     TransformersLoader,
-    cohens_kappa,
+    compare_detectors,
     run_image_detector,
     run_text_detectors,
     select_runtime_device,
@@ -111,25 +111,26 @@ def _agreement_notes(text: list) -> list[str]:
     notes = []
     for index, first in enumerate(comparable):
         for second in comparable[index + 1 :]:
-            kappa = cohens_kappa(first.chunk_scores, second.chunk_scores)
-            if kappa is None:
-                continue
-            notes.append(
-                f"{first.name} and {second.name} agree on "
-                f"{_agreement_words(kappa)} (Cohen's kappa {kappa:+.2f} over "
-                f"{len(first.chunk_scores)} shared chunks)."
-            )
+            comparison = compare_detectors(first.chunk_scores, second.chunk_scores)
+            if comparison is not None:
+                notes.append(_agreement_sentence(first.name, second.name, comparison))
     return notes
 
 
-def _agreement_words(kappa: float) -> str:
-    if kappa >= 0.8:
-        return "almost every chunk"
-    if kappa >= 0.4:
-        return "most chunks"
-    if kappa > -0.2:
-        return "no more chunks than chance would predict"
-    return "fewer chunks than chance would predict, which means they contradict"
+def _agreement_sentence(first: str, second: str, comparison) -> str:
+    """State the comparison in counts, which stay meaningful when kappa cannot."""
+    disagreed = comparison.chunks - comparison.agreed
+    head = (
+        f"{first} and {second} agree on {comparison.agreed} of "
+        f"{comparison.chunks} shared chunks"
+    )
+    if comparison.degenerate:
+        return (
+            f"{head}: one of them gave every chunk the same call, so Cohen's "
+            f"kappa is 0.00 by construction and says nothing here. "
+            f"They contradict each other on {disagreed}."
+        )
+    return f"{head} (Cohen's kappa {comparison.kappa:+.2f})."
 
 
 def _unavailable_notes(text: list, images: list) -> list[str]:

@@ -7,6 +7,7 @@ from slop_detector.models import (
     run_image_detector,
     ai_probability,
     cohens_kappa,
+    compare_detectors,
     verdict,
     resolve_ai_label_index,
     run_text_detectors,
@@ -341,3 +342,25 @@ def test_kappa_of_a_detector_that_never_changes_its_mind_is_not_inflated():
     assert cohens_kappa([0.9, 0.9, 0.9], [0.8, 0.8, 0.8]) == 1.0
     # One always says AI, the other is split: agreement is pure chance.
     assert cohens_kappa([0.9, 0.9, 0.9, 0.9], [0.9, 0.9, 0.1, 0.1]) == 0.0
+
+
+def test_comparison_flags_a_detector_that_never_changed_its_call():
+    # Glyph calls 13 of 14 chunks AI, Vanguard calls none: kappa is 0 by
+    # construction, so the counts have to carry the meaning.
+    glyph = [0.9] * 13 + [0.04]
+    vanguard = [0.05] * 14
+
+    comparison = compare_detectors(glyph, vanguard)
+
+    assert comparison.chunks == 14
+    assert comparison.agreed == 1
+    assert comparison.kappa == 0.0
+    assert comparison.degenerate is True
+
+
+def test_comparison_reports_a_real_kappa_when_both_detectors_vary():
+    comparison = compare_detectors([0.9, 0.9, 0.1, 0.1], [0.9, 0.1, 0.1, 0.1])
+
+    assert comparison.degenerate is False
+    assert comparison.agreed == 3
+    assert 0.0 < comparison.kappa < 1.0

@@ -180,6 +180,35 @@ def editlens_score(logits: list[float]) -> float:
 DECISION_THRESHOLD = 0.5
 
 
+@dataclass(frozen=True)
+class Agreement:
+    """How two detectors compared over the chunks they both scored."""
+
+    chunks: int
+    agreed: int
+    kappa: float
+    #: True when one detector gave every chunk the same call. Kappa is 0 by
+    #: construction in that case regardless of how the two actually compared,
+    #: so the raw counts are the only informative part.
+    degenerate: bool
+
+
+def compare_detectors(first: list[float], second: list[float]) -> Agreement | None:
+    """Compare two detectors chunk by chunk over one shared partition."""
+    kappa = cohens_kappa(first, second)
+    if kappa is None:
+        return None
+
+    left = [score >= DECISION_THRESHOLD for score in first]
+    right = [score >= DECISION_THRESHOLD for score in second]
+    return Agreement(
+        chunks=len(left),
+        agreed=sum(1 for a, b in zip(left, right) if a == b),
+        kappa=kappa,
+        degenerate=len(set(left)) == 1 or len(set(right)) == 1,
+    )
+
+
 def cohens_kappa(first: list[float], second: list[float]) -> float | None:
     """Chance-corrected agreement between two detectors over the same chunks.
 
