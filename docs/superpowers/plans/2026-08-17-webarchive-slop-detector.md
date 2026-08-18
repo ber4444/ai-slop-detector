@@ -1,6 +1,6 @@
 # Webarchive Slop Detector Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Build a Kotlin entry-point CLI that runs local Hugging Face text and optional image detectors over a `.webarchive` file and prints an advisory terminal report.
 
@@ -53,7 +53,7 @@
 - Produces: `RunRequest(archive_path: str, include_images: bool, verbose: bool)`, `DetectorResult(name: str, score: float, label: str, detail: str)`, `ImageResult(index: int, score: float | None, label: str | None, metadata_flags: list[str], skipped_reason: str | None)`, and `RunReport(text: list[DetectorResult], images: list[ImageResult], warnings: list[str])`.
 - Produces: `RunReport.to_json() -> str` and `RunReport.from_json(raw: str) -> RunReport` as the Kotlin/Python boundary.
 
-- [ ] **Step 1: Write the failing contract round-trip test**
+- [x] **Step 1: Write the failing contract round-trip test**
 
 ```python
 from slop_detector.contracts import DetectorResult, ImageResult, RunReport
@@ -71,13 +71,13 @@ def test_report_json_round_trip_preserves_separate_text_image_and_metadata_resul
     assert parsed == report
 ```
 
-- [ ] **Step 2: Run the test to verify it fails because the package is absent**
+- [x] **Step 2: Run the test to verify it fails because the package is absent**
 
 Run: `python3 -m pytest tests/python/test_contracts.py -q`
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'slop_detector'`.
 
-- [ ] **Step 3: Add the minimal typed JSON contract and dependency files**
+- [x] **Step 3: Add the minimal typed JSON contract and dependency files**
 
 ```python
 # worker/slop_detector/contracts.py
@@ -127,13 +127,13 @@ pythonpath = ["worker"]
 testpaths = ["tests/python", "tests/kotlin"]
 ```
 
-- [ ] **Step 4: Run the contract test to verify it passes**
+- [x] **Step 4: Run the contract test to verify it passes**
 
 Run: `python3 -m pytest tests/python/test_contracts.py -q`
 
 Expected: PASS with `1 passed`.
 
-- [ ] **Step 5: Commit the scaffold**
+- [x] **Step 5: Commit the scaffold**
 
 ```bash
 git add .gitignore pyproject.toml worker tests/python/test_contracts.py
@@ -153,7 +153,7 @@ git commit -m "chore: scaffold local detector worker"
 - Produces: `ArchiveContent(text: str, images: list[EmbeddedImage])` where `EmbeddedImage(index: int, mime_type: str, data: bytes)`.
 - Produces: `parse_webarchive(path: Path) -> ArchiveContent` and raises `ValueError` with the prefix `Invalid webarchive:` for malformed archives.
 
-- [ ] **Step 1: Write failing extraction tests using a minimal plist fixture**
+- [x] **Step 1: Write failing extraction tests using a minimal plist fixture**
 
 ```python
 from pathlib import Path
@@ -172,13 +172,13 @@ def test_parse_webarchive_rejects_non_plist_input():
         parse_webarchive(FIXTURES / "malformed.webarchive")
 ```
 
-- [ ] **Step 2: Run the webarchive tests to verify they fail because the parser is absent**
+- [x] **Step 2: Run the webarchive tests to verify they fail because the parser is absent**
 
 Run: `python3 -m pytest tests/python/test_webarchive.py -q`
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'slop_detector.webarchive'`.
 
-- [ ] **Step 3: Implement the plist/resource parser and content selection**
+- [x] **Step 3: Implement the plist/resource parser and content selection**
 
 ```python
 @dataclass(frozen=True)
@@ -207,13 +207,13 @@ def parse_webarchive(path: Path) -> ArchiveContent:
 
 Create `article-with-image.webarchive` as an XML plist containing `WebMainResource/WebResourceData` for the exact HTML in the assertion and one `image/png` subresource whose base64 data is a 1×1 PNG. Create `malformed.webarchive` with the literal bytes `not a plist`.
 
-- [ ] **Step 4: Run the parser tests to verify they pass**
+- [x] **Step 4: Run the parser tests to verify they pass**
 
 Run: `python3 -m pytest tests/python/test_webarchive.py -q`
 
 Expected: PASS with `2 passed`.
 
-- [ ] **Step 5: Commit webarchive parsing**
+- [x] **Step 5: Commit webarchive parsing**
 
 ```bash
 git add worker/slop_detector/webarchive.py tests/fixtures tests/python/test_webarchive.py
@@ -233,7 +233,7 @@ git commit -m "feat: parse webarchive text and images"
 - Produces: `editlens_score(logits: list[float]) -> float`, using `sum(index * softmax(logits)[index]) / (len(logits) - 1)`.
 - Produces: `inspect_image_metadata(data: bytes) -> list[str]`, which returns only positive generator/software indicators.
 
-- [ ] **Step 1: Write failing pure-function tests for chunk boundaries, EditLens scoring, and metadata**
+- [x] **Step 1: Write failing pure-function tests for chunk boundaries, EditLens scoring, and metadata**
 
 ```python
 from io import BytesIO
@@ -261,13 +261,13 @@ def test_metadata_reports_generator_software_but_not_absence():
     assert inspect_image_metadata(b"not an image") == []
 ```
 
-- [ ] **Step 2: Run pure-function tests to verify they fail because the modules are absent**
+- [x] **Step 2: Run pure-function tests to verify they fail because the modules are absent**
 
 Run: `python3 -m pytest tests/python/test_models.py tests/python/test_metadata.py -q`
 
 Expected: FAIL with `ModuleNotFoundError` for `slop_detector.models` and `slop_detector.metadata`.
 
-- [ ] **Step 3: Implement deterministic helpers without loading model weights**
+- [x] **Step 3: Implement deterministic helpers without loading model weights**
 
 ```python
 def select_device(torch_module: object) -> str:
@@ -290,13 +290,13 @@ def inspect_image_metadata(data: bytes) -> list[str]:
 
 Ensure `chunk_text` first splits on sentence endings, only splits a single overlong sentence as a last resort, drops empty chunks, and never returns a chunk longer than the limit. Ensure the score helper raises `ValueError` for fewer than two logits.
 
-- [ ] **Step 4: Run the pure-function tests to verify they pass**
+- [x] **Step 4: Run the pure-function tests to verify they pass**
 
 Run: `python3 -m pytest tests/python/test_models.py tests/python/test_metadata.py -q`
 
 Expected: PASS with `4 passed`.
 
-- [ ] **Step 5: Commit scoring and metadata helpers**
+- [x] **Step 5: Commit scoring and metadata helpers**
 
 ```bash
 git add worker/slop_detector/models.py worker/slop_detector/metadata.py tests/python/test_models.py tests/python/test_metadata.py
@@ -314,7 +314,7 @@ git commit -m "feat: add scoring and image metadata helpers"
 - Produces: `run_text_detectors(text: str, loader: ModelLoader, device: str) -> list[DetectorResult]` in the stable order Glyph, Vanguard, EditLens.
 - Produces: `run_image_detector(images: list[EmbeddedImage], loader: ModelLoader, device: str) -> list[ImageResult]`.
 
-- [ ] **Step 1: Write failing adapter tests with a fake loader**
+- [x] **Step 1: Write failing adapter tests with a fake loader**
 
 ```python
 from slop_detector.models import run_text_detectors
@@ -341,13 +341,13 @@ def test_text_detectors_run_sequentially_and_keep_their_distinct_meaning():
     assert results[2].label == "estimated AI-edit extent"
 ```
 
-- [ ] **Step 2: Run the adapter test to verify it fails because the runner is absent**
+- [x] **Step 2: Run the adapter test to verify it fails because the runner is absent**
 
 Run: `python3 -m pytest tests/python/test_models.py::test_text_detectors_run_sequentially_and_keep_their_distinct_meaning -q`
 
 Expected: FAIL with `ImportError` for `run_text_detectors`.
 
-- [ ] **Step 3: Implement the fakeable adapters and production Hugging Face loader**
+- [x] **Step 3: Implement the fakeable adapters and production Hugging Face loader**
 
 ```python
 TEXT_MODELS = (
@@ -372,13 +372,13 @@ def run_text_detectors(text: str, loader: ModelLoader, device: str) -> list[Dete
 
 `TransformersLoader` must pass the token from `read_hf_token()` to every `from_pretrained` call, set models to evaluation mode, use `torch.inference_mode()`, and clear MPS cache after each adapter. It must derive text-classifier AI probability from each model’s `id2label` instead of assuming a fixed label index. For the Organika image model, read the `artificial` softmax probability and retain the metadata output from Task 3.
 
-- [ ] **Step 4: Run the adapter test to verify it passes**
+- [x] **Step 4: Run the adapter test to verify it passes**
 
 Run: `python3 -m pytest tests/python/test_models.py::test_text_detectors_run_sequentially_and_keep_their_distinct_meaning -q`
 
 Expected: PASS with `1 passed`.
 
-- [ ] **Step 5: Commit model adapters**
+- [x] **Step 5: Commit model adapters**
 
 ```bash
 git add worker/slop_detector/models.py tests/python/test_models.py
@@ -397,7 +397,7 @@ git commit -m "feat: run local detector models sequentially"
 - Produces: exactly one `RunReport.to_json()` document on stdout and exit code `0` on success.
 - Produces: errors written only to stderr, with exit code `2` for invalid input and `1` for setup/model failures.
 
-- [ ] **Step 1: Write failing worker CLI tests for normal and optional-image behavior**
+- [x] **Step 1: Write failing worker CLI tests for normal and optional-image behavior**
 
 ```python
 import json
@@ -418,13 +418,13 @@ def test_worker_reports_individual_bad_images_without_discarding_text(monkeypatc
     assert json.loads(capsys.readouterr().out)["images"] == ["skipped"]
 ```
 
-- [ ] **Step 2: Run worker CLI tests to verify they fail because the entry point is absent**
+- [x] **Step 2: Run worker CLI tests to verify they fail because the entry point is absent**
 
 Run: `python3 -m pytest tests/python/test_worker_cli.py -q`
 
 Expected: FAIL with `ModuleNotFoundError: No module named 'slop_detector.main'`.
 
-- [ ] **Step 3: Implement argument parsing and report-only stdout**
+- [x] **Step 3: Implement argument parsing and report-only stdout**
 
 ```python
 def main(argv: list[str] | None = None) -> int:
@@ -448,13 +448,13 @@ def main(argv: list[str] | None = None) -> int:
 
 `read_hf_token()` must read and trim only `.secrets/huggingface.token`, reject an absent/empty file with `Hugging Face token missing: place it in .secrets/huggingface.token`, and never include token bytes in errors. Wrap gated-repository download failures with a message that names both model pages whose access terms must be accepted.
 
-- [ ] **Step 4: Run worker CLI tests to verify they pass**
+- [x] **Step 4: Run worker CLI tests to verify they pass**
 
 Run: `python3 -m pytest tests/python/test_worker_cli.py -q`
 
 Expected: PASS with `2 passed`.
 
-- [ ] **Step 5: Commit the worker CLI**
+- [x] **Step 5: Commit the worker CLI**
 
 ```bash
 git add worker/slop_detector/main.py worker/slop_detector/contracts.py tests/python/test_worker_cli.py
@@ -472,7 +472,7 @@ git commit -m "feat: add local inference worker CLI"
 - Consumes: `kotlin slop-detector.main.kts <archive.webarchive> [--images] [--verbose]`.
 - Produces: a readable terminal report with `Text detectors`, optional `Image detectors`, `Metadata heuristics`, and advisory text; returns worker exit status on failure.
 
-- [ ] **Step 1: Write a failing black-box test using a fake Python executable**
+- [x] **Step 1: Write a failing black-box test using a fake Python executable**
 
 ```python
 import os, subprocess
@@ -494,13 +494,13 @@ def test_kotlin_cli_renders_worker_report_and_forwards_images_flag(tmp_path):
     assert "--images" in received.read_text()
 ```
 
-- [ ] **Step 2: Run the Kotlin CLI test to verify it fails because the script is absent**
+- [x] **Step 2: Run the Kotlin CLI test to verify it fails because the script is absent**
 
 Run: `python3 -m pytest tests/kotlin/test_cli.py -q`
 
 Expected: FAIL with a nonzero process result and `script file not found` in stderr.
 
-- [ ] **Step 3: Implement the Kotlin script with explicit process handling**
+- [x] **Step 3: Implement the Kotlin script with explicit process handling**
 
 ```kotlin
 #!/usr/bin/env kotlin
@@ -528,13 +528,13 @@ renderReport(payload)
 
 Before starting the worker, `bootstrapPython()` must create `.venv` with `python3 -m venv .venv`, install `worker/requirements.txt`, set `HF_HOME` to `<repo>/.model-cache`, and skip those commands only when `SLOP_DETECTOR_SKIP_BOOTSTRAP=1`. Implement `renderReport` with Kotlin’s `kotlinx.serialization-json` dependency declared at the top of the script, render scores with one decimal percent, print only the image/metadata sections when results exist, and append every warning under `Notes:`.
 
-- [ ] **Step 4: Run the Kotlin CLI test to verify it passes**
+- [x] **Step 4: Run the Kotlin CLI test to verify it passes**
 
 Run: `python3 -m pytest tests/kotlin/test_cli.py -q`
 
 Expected: PASS with `1 passed`.
 
-- [ ] **Step 5: Commit the Kotlin CLI**
+- [x] **Step 5: Commit the Kotlin CLI**
 
 ```bash
 git add slop-detector.main.kts tests/kotlin/test_cli.py pyproject.toml
@@ -550,7 +550,7 @@ git commit -m "feat: add Kotlin webarchive detector CLI"
 **Interfaces:**
 - Documents exact token location, required Hugging Face terms acceptance, Kotlin/Python prerequisites, `--images`, model-cache behavior, and the intentional limitations of all detector results.
 
-- [ ] **Step 1: Write a failing test that ensures the token error gives the safe placement**
+- [x] **Step 1: Write a failing test that ensures the token error gives the safe placement**
 
 ```python
 from slop_detector.main import read_hf_token
@@ -562,13 +562,13 @@ def test_missing_token_names_the_gitignored_token_file(monkeypatch, tmp_path):
         read_hf_token()
 ```
 
-- [ ] **Step 2: Run the test to verify it fails if the safe error is missing**
+- [x] **Step 2: Run the test to verify it fails if the safe error is missing**
 
 Run: `python3 -m pytest tests/python/test_worker_cli.py::test_missing_token_names_the_gitignored_token_file -q`
 
 Expected: FAIL until the exact safe path is part of `read_hf_token()`.
 
-- [ ] **Step 3: Complete the safe token failure and write README instructions**
+- [x] **Step 3: Complete the safe token failure and write README instructions**
 
 ```markdown
 ## Hugging Face access
@@ -583,19 +583,19 @@ kotlin slop-detector.main.kts saved-page.webarchive --images --verbose
 
 Document model licenses: EditLens is CC BY-NC-SA 4.0 and Organika’s SDXL detector is CC BY-NC 3.0, so this repository’s intended use remains personal/non-commercial. State the explicit first-run download behavior and the opt-in smoke command `kotlin slop-detector.main.kts tests/fixtures/article-with-image.webarchive --images`.
 
-- [ ] **Step 4: Run the complete offline test suite**
+- [x] **Step 4: Run the complete offline test suite**
 
 Run: `python3 -m pytest -q`
 
 Expected: PASS with no skipped or failing tests.
 
-- [ ] **Step 5: Compile-check the Kotlin script without bootstrapping downloads**
+- [x] **Step 5: Compile-check the Kotlin script without bootstrapping downloads**
 
 Run: `SLOP_DETECTOR_SKIP_BOOTSTRAP=1 SLOP_DETECTOR_PYTHON=/usr/bin/true kotlin slop-detector.main.kts --help`
 
 Expected: Kotlin script parses and prints usage without creating a virtual environment or downloading weights.
 
-- [ ] **Step 6: Commit documentation and verification additions**
+- [x] **Step 6: Commit documentation and verification additions**
 
 ```bash
 git add README.md worker/slop_detector/main.py tests/python/test_worker_cli.py
