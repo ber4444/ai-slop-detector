@@ -43,8 +43,16 @@ access conditions for both gated repositories:
 - <https://huggingface.co/pangram/editlens_Llama-3.2-3B>
 - <https://huggingface.co/meta-llama/Llama-3.2-3B>
 
-The token needs read permission for accepted gated repositories. If access is
-missing, the run stops with a nonzero exit code and names both pages.
+Use a **read-only** token — this tool only downloads weights and never writes to
+the Hub, so a write token would grant capability it never uses. A fine-grained
+token scoped to the five model repositories is preferable to a classic Read
+token, which can read everything your account can reach. Fine-grained tokens
+also need the permission covering read access to public gated repositories you
+have been granted; without it, EditLens and Llama fail with a 403 even after you
+have accepted their licenses.
+
+If access is missing, the run stops with a nonzero exit code and names both
+gated pages.
 
 ## First run
 
