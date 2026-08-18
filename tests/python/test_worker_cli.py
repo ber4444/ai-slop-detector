@@ -56,7 +56,7 @@ def test_worker_always_prints_the_advisory_notes(stub_worker, capsys, tmp_path):
     main(["--archive", str(tmp_path / "page.webarchive")])
 
     warnings = json.loads(capsys.readouterr().out)["warnings"]
-    assert any("advisory" in warning for warning in warnings)
+    assert any("guesses, not proof" in warning for warning in warnings)
 
 
 def test_worker_reports_verbose_extraction_counts_only_when_asked(
@@ -149,7 +149,7 @@ def test_partial_text_results_are_reported_with_a_named_gap(
 
     report = json.loads(capsys.readouterr().out)
     assert [result["score"] for result in report["text"]] == [0.4, None]
-    assert any("partial report" in note for note in report["warnings"])
+    assert any("Not every detector ran" in note for note in report["warnings"])
     assert any("EditLens" in note for note in report["warnings"])
 
 
@@ -183,7 +183,7 @@ def test_a_complete_run_says_nothing_about_partial_results(
     main(["--archive", str(tmp_path / "page.webarchive")])
 
     warnings = json.loads(capsys.readouterr().out)["warnings"]
-    assert not any("partial report" in note for note in warnings)
+    assert not any("Not every detector ran" in note for note in warnings)
 
 
 def test_agreement_between_detectors_is_reported_as_kappa(
@@ -197,7 +197,7 @@ def test_agreement_between_detectors_is_reported_as_kappa(
         ],
     )
 
-    main(["--archive", str(tmp_path / "page.webarchive")])
+    main(["--archive", str(tmp_path / "page.webarchive"), "--verbose"])
 
     warnings = json.loads(capsys.readouterr().out)["warnings"]
     agreement = next(note for note in warnings if "kappa" in note)
@@ -246,10 +246,49 @@ def test_agreement_note_refuses_to_read_meaning_into_a_degenerate_kappa(
         ],
     )
 
-    main(["--archive", str(tmp_path / "page.webarchive")])
+    main(["--archive", str(tmp_path / "page.webarchive"), "--verbose"])
 
     warnings = json.loads(capsys.readouterr().out)["warnings"]
     note = next(note for note in warnings if "Glyph and Vanguard" in note)
     assert "agree on 1 of 14 shared chunks" in note
     assert "says nothing here" in note
     assert "contradict each other on 13" in note
+
+
+def test_quiet_report_says_detectors_contradict_without_naming_a_statistic(
+    stub_worker, capsys, tmp_path
+):
+    stub_worker.setattr(
+        "slop_detector.main.run_text_detectors",
+        lambda *args: [
+            DetectorResult("Glyph", 0.87, "x", "14 chunks", [0.9] * 13 + [0.04]),
+            DetectorResult("Vanguard", 0.08, "y", "14 chunks", [0.05] * 14),
+        ],
+    )
+
+    main(["--archive", str(tmp_path / "page.webarchive")])
+
+    warnings = json.loads(capsys.readouterr().out)["warnings"]
+    assert not any("kappa" in note for note in warnings)
+    assert not any("chunk" in note for note in warnings)
+    note = next(note for note in warnings if "Glyph and Vanguard" in note)
+    assert "flatly contradict each other" in note
+    assert "Treat the page as unresolved." in note
+
+
+def test_quiet_report_keeps_the_mechanics_out_of_the_notes(
+    stub_worker, capsys, tmp_path
+):
+    stub_worker.setattr(
+        "slop_detector.main.run_text_detectors",
+        lambda *args: [DetectorResult("Glyph", 0.4, "x", "1 chunk", [0.4])],
+    )
+
+    main(["--archive", str(tmp_path / "page.webarchive")])
+    quiet = json.loads(capsys.readouterr().out)["warnings"]
+    main(["--archive", str(tmp_path / "page.webarchive"), "--verbose"])
+    loud = json.loads(capsys.readouterr().out)["warnings"]
+
+    assert not any("mean" in note or "%" in note for note in quiet)
+    assert any("mean" in note for note in loud)
+    assert any("guesses, not proof" in note for note in quiet)

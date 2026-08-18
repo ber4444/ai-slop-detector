@@ -72,14 +72,16 @@ fun JsonObject.whole(key: String): Int? = this[key]?.jsonPrimitive?.intOrNull
 fun JsonObject.strings(key: String): List<String> =
     this[key]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
 
-fun renderReport(payload: String, archive: String) {
+fun renderReport(payload: String, archive: String, verbose: Boolean) {
     val report = try {
         Json.parseToJsonElement(payload).jsonObject
     } catch (error: Exception) {
         fail("The worker did not return a readable report: ${error.message}", 1)
     }
 
-    val lines = mutableListOf("Archive: $archive", "", "Text detectors")
+    // Without --verbose the report is prose: a reader who does not work with
+    // these models gets the plain reading, not the percentage behind it.
+    val lines = mutableListOf("Archive: $archive", "", "What the text detectors think")
     val detectors = report["text"]?.jsonArray.orEmpty()
     if (detectors.isEmpty()) {
         lines += "  (no text detector results)"
@@ -93,33 +95,37 @@ fun renderReport(payload: String, archive: String) {
         if (score == null) {
             // A detector that could not run explains itself over as many lines
             // as its error needs, rather than being squeezed into parentheses.
-            lines += "  $name: unavailable"
+            lines += "  $name: could not run"
             detail?.lines()?.filter { it.isNotBlank() }?.forEach { lines += "      ${it.trim()}" }
-        } else {
+        } else if (verbose) {
             val head = "  $name: ${percent(score)} — $label"
             lines += if (detail.isNullOrBlank()) head else "$head ($detail)"
+        } else {
+            lines += "  $name: $label"
         }
     }
 
     val images = report["images"]?.jsonArray.orEmpty().map { it.jsonObject }
     if (images.isNotEmpty()) {
         lines += ""
-        lines += "Image detectors"
+        lines += "What the image detector thinks"
         for (image in images) {
             val index = image.whole("index") ?: 0
             val skipped = image.text("skipped_reason")
             val score = image.number("score")
+            val label = image.text("label") ?: ""
             lines += when {
                 skipped != null -> "  Image $index: skipped ($skipped)"
-                score != null -> "  Image $index: ${percent(score)} — ${image.text("label") ?: ""}"
-                else -> "  Image $index: unavailable"
+                score == null -> "  Image $index: unavailable"
+                verbose -> "  Image $index: ${percent(score)} — $label"
+                else -> "  Image $index: $label"
             }
         }
 
         val flagged = images.filter { it.strings("metadata_flags").isNotEmpty() }
         if (flagged.isNotEmpty()) {
             lines += ""
-            lines += "Metadata heuristics"
+            lines += "What the image files say about themselves"
             for (image in flagged) {
                 for (flag in image.strings("metadata_flags")) {
                     lines += "  Image ${image.whole("index") ?: 0}: $flag"
@@ -173,4 +179,4 @@ val payload = process.inputStream.bufferedReader().readText()
 val code = process.waitFor()
 if (code != 0) exitProcess(code)
 
-renderReport(payload, archive)
+renderReport(payload, archive, options.contains("--verbose"))

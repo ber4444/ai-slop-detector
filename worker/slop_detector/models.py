@@ -14,22 +14,44 @@ from .webarchive import EmbeddedImage
 MAX_CHUNK_CHARACTERS = 6000
 
 
-# Both text detectors and Organika document a 0.5 decision threshold. A verdict
-# is only stated outside a band around it, because a score of 0.51 is not a
-# meaningfully different reading from 0.49.
+# Both text detectors and Organika document a 0.5 decision threshold. The
+# wording says how strongly a detector leans, in plain language, because the
+# percentage behind it means nothing to most readers.
 AI_VERDICT_THRESHOLD = 0.60
 HUMAN_VERDICT_THRESHOLD = 0.40
-UNDECIDED_VERDICT = "too close to call"
+UNDECIDED_VERDICT = "unclear — could be either"
 NOT_ASSESSED_LABEL = "not assessed"
+
+STRONG_AI_THRESHOLD = 0.90
+STRONG_HUMAN_THRESHOLD = 0.10
 
 
 def verdict(score: float, ai_word: str = "AI-generated", human_word: str = "human") -> str:
-    """Turn a probability into the plain reading a person wants from it."""
+    """Say in plain words how strongly a detector leans, and which way.
+
+    This describes the detector's confidence, never whether it is right: the
+    tool has no ground truth to check itself against.
+    """
+    if score >= STRONG_AI_THRESHOLD:
+        return f"almost certainly {ai_word}"
     if score >= AI_VERDICT_THRESHOLD:
-        return f"likely {ai_word}"
+        return f"probably {ai_word}"
+    if score < STRONG_HUMAN_THRESHOLD:
+        return f"almost certainly {human_word}"
     if score < HUMAN_VERDICT_THRESHOLD:
-        return f"likely {human_word}"
+        return f"probably {human_word}"
     return UNDECIDED_VERDICT
+
+
+def describe_edit_extent(score: float) -> str:
+    """Plain reading of EditLens's edit fraction, which is not a probability."""
+    if score >= 0.85:
+        return "reads as heavily AI-edited"
+    if score >= 0.50:
+        return "much of it reads as AI-edited"
+    if score >= 0.15:
+        return "parts of it read as AI-edited"
+    return "little sign of AI editing"
 
 
 @dataclass(frozen=True)
@@ -291,7 +313,7 @@ def _score_text_model(
         predictions = [predictor(chunk) for chunk in chunks]
     except Exception as error:  # noqa: BLE001 - one detector must not stop the rest
         return DetectorResult(
-            model.name, None, NOT_ASSESSED_LABEL, _unavailable(error)
+            model.name, None, NOT_ASSESSED_LABEL, _unavailable(error, verbose)
         )
     finally:
         _release(loader, predictor)
@@ -312,15 +334,16 @@ def _score_editlens(
         scores = [editlens_score(list(predictor(chunk))) for chunk in chunks]
     except Exception as error:  # noqa: BLE001 - one detector must not stop the rest
         return DetectorResult(
-            EDITLENS_NAME, None, NOT_ASSESSED_LABEL, _unavailable(error)
+            EDITLENS_NAME, None, NOT_ASSESSED_LABEL, _unavailable(error, verbose)
         )
     finally:
         _release(loader, predictor)
 
+    score = mean_score(scores)
     return DetectorResult(
         EDITLENS_NAME,
-        mean_score(scores),
-        EDITLENS_LABEL,
+        score,
+        describe_edit_extent(score),
         _detail(chunks, scores, verbose),
         scores,
     )
@@ -378,7 +401,13 @@ def run_image_detector(
             )
             continue
         results.append(
-            ImageResult(image.index, score, verdict(score, "artificial"), flags, None)
+            ImageResult(
+                image.index,
+                score,
+                verdict(score, "AI-generated", "human-made"),
+                flags,
+                None,
+            )
         )
     _release(loader, predictor)
     return results
@@ -392,10 +421,19 @@ def _skip_reason(error: Exception) -> str:
     return f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
 
 
-def _unavailable(error: Exception) -> str:
-    """Explain why a detector could not run, keeping any guidance the error carries."""
+def _unavailable(error: Exception, verbose: bool = True) -> str:
+    """Explain why a detector could not run.
+
+    Errors from the hub carry their actionable guidance on the last line, so a
+    non-verbose report shows that line rather than the request IDs and URLs
+    above it.
+    """
     if isinstance(error, RuntimeError) and str(error).strip():
-        return str(error).strip()
+        message = str(error).strip()
+        if verbose:
+            return message
+        lines = [line.strip() for line in message.splitlines() if line.strip()]
+        return lines[-1] if lines else message
     return _skip_reason(error)
 
 

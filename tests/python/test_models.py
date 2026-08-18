@@ -8,6 +8,7 @@ from slop_detector.models import (
     ai_probability,
     cohens_kappa,
     compare_detectors,
+    describe_edit_extent,
     verdict,
     resolve_ai_label_index,
     run_text_detectors,
@@ -97,7 +98,7 @@ def test_text_detectors_run_sequentially_and_keep_their_distinct_meaning():
         "ShantanuT01/vanguard-ai-text-detector",
         "pangram/editlens_Llama-3.2-3B",
     ]
-    assert results[2].label == "estimated AI-edit extent"
+    assert results[2].label == "much of it reads as AI-edited"
     assert all(result.detail == "1 chunk" for result in results)
 
 
@@ -122,7 +123,7 @@ def test_image_detector_keeps_model_scores_and_metadata_flags_separate(png_bytes
 
     assert loader.loaded == ["Organika/sdxl-detector"]
     assert results[0].score == 0.9
-    assert results[0].label == "likely artificial"
+    assert results[0].label == "almost certainly AI-generated"
     assert results[0].metadata_flags == ["Software: Stable Diffusion"]
     assert results[0].skipped_reason is None
 
@@ -237,12 +238,21 @@ def test_a_gated_detector_does_not_discard_the_detectors_that_ran():
 
 
 def test_an_unavailable_detector_keeps_the_guidance_its_error_carried():
-    results = run_text_detectors("A sentence.", BrokenLoader("EditLens"), "mps")
+    results = run_text_detectors(
+        "A sentence.", BrokenLoader("EditLens"), "mps", verbose=True
+    )
 
     editlens = next(result for result in results if result.name == "EditLens")
     assert "gated repository" in editlens.detail
     assert "Accept the terms." in editlens.detail
     assert editlens.label == "not assessed"
+
+
+def test_a_quiet_report_shows_only_the_actionable_line_of_a_failure():
+    results = run_text_detectors("A sentence.", BrokenLoader("EditLens"), "mps")
+
+    editlens = next(result for result in results if result.name == "EditLens")
+    assert editlens.detail == "Accept the terms."
 
 
 def test_every_detector_can_fail_independently():
@@ -282,22 +292,31 @@ def test_verbose_exposes_the_spread_the_mean_hides():
 
 
 def test_verdict_states_the_plain_reading_on_each_side_of_the_threshold():
-    assert verdict(0.216) == "likely human"
-    assert verdict(0.371) == "likely human"
-    assert verdict(0.0) == "likely human"
-    assert verdict(0.9) == "likely AI-generated"
-    assert verdict(1.0) == "likely AI-generated"
+    assert verdict(0.216) == "probably human"
+    assert verdict(0.371) == "probably human"
+    assert verdict(0.078) == "almost certainly human"
+    assert verdict(0.0) == "almost certainly human"
+    assert verdict(0.7) == "probably AI-generated"
+    assert verdict(0.867) == "probably AI-generated"
+    assert verdict(0.95) == "almost certainly AI-generated"
 
 
 def test_verdict_declines_to_commit_near_the_decision_threshold():
-    assert verdict(0.45) == "too close to call"
-    assert verdict(0.55) == "too close to call"
-    assert verdict(0.5) == "too close to call"
+    assert verdict(0.45) == "unclear — could be either"
+    assert verdict(0.55) == "unclear — could be either"
+    assert verdict(0.5) == "unclear — could be either"
 
 
-def test_verdict_uses_the_image_models_own_vocabulary():
-    assert verdict(0.91, "artificial") == "likely artificial"
-    assert verdict(0.05, "artificial") == "likely human"
+def test_verdict_wording_is_configurable_for_images():
+    assert verdict(0.91, "AI-generated", "human-made") == "almost certainly AI-generated"
+    assert verdict(0.05, "AI-generated", "human-made") == "almost certainly human-made"
+
+
+def test_edit_extent_is_described_without_implying_a_probability():
+    assert describe_edit_extent(0.02) == "little sign of AI editing"
+    assert describe_edit_extent(0.30) == "parts of it read as AI-edited"
+    assert describe_edit_extent(0.60) == "much of it reads as AI-edited"
+    assert describe_edit_extent(0.90) == "reads as heavily AI-edited"
 
 
 def test_a_scored_detector_is_labelled_with_its_verdict_not_a_fixed_string():
@@ -308,8 +327,8 @@ def test_a_scored_detector_is_labelled_with_its_verdict_not_a_fixed_string():
 
     results = run_text_detectors("A sentence.", HumanishLoader(), "cpu")
 
-    assert results[0].label == "likely human"
-    assert results[1].label == "likely human"
+    assert results[0].label == "probably human"
+    assert results[1].label == "probably human"
 
 
 def test_detectors_carry_their_per_chunk_scores_for_comparison():

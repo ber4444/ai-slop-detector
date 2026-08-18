@@ -80,9 +80,9 @@ kotlin slop-detector.main.kts saved-page.webarchive --images --verbose
 - default — extracts and analyzes readable text only.
 - `--images` — also extracts embedded raster images, runs the image detector,
   and inspects image metadata.
-- `--verbose` — adds the device, extraction counts, chunk counts, per-chunk
-  score spread, skip reasons, and each model's own published label where it has
-  one.
+- `--verbose` — switches the report from plain language to numbers: each
+  model's percentage, the per-chunk spread behind it, Cohen's kappa between
+  detectors, the device, extraction counts, and full error text.
 
 Exit codes: `0` success, `2` invalid input (bad arguments or an unreadable
 archive, detected before any model loads), `1` setup failure (missing Python
@@ -113,6 +113,28 @@ and shown; if the image model itself cannot load, every image is skipped and the
 text results are unaffected.
 
 ## How to read the output
+
+By default the report says what each detector thinks in plain words, because a
+percentage is not something most readers can act on:
+
+```text
+What the text detectors think
+  Glyph: probably AI-generated
+  Vanguard: almost certainly human
+
+Notes:
+  - Glyph and Vanguard flatly contradict each other about this page: one reads
+    it as AI-generated and the other as human. When they disagree this sharply,
+    neither reading is trustworthy here. Treat the page as unresolved.
+```
+
+The wording describes how strongly a detector leans — `almost certainly human`
+under 10%, `probably human` under 40%, `unclear` in the middle, `probably
+AI-generated` from 60%, `almost certainly AI-generated` from 90%. It never says
+whether a detector is *right*: the tool has no ground truth to check itself
+against, so a confident detector and a correct one look identical here.
+
+Pass `--verbose` for the numbers behind that wording.
 
 - Every score is **advisory**. AI-text detection is unreliable enough that no
   result here should be the sole basis for a consequential decision, and none of

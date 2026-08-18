@@ -20,25 +20,33 @@ from .webarchive import parse_webarchive
 
 TOKEN_RELATIVE_PATH = Path(".secrets/huggingface.token")
 
+# Kept short and jargon-free: this is what someone reads on every run.
 ADVISORY_NOTES = (
-    "Detector scores are advisory: they are not proof of authorship and are "
-    "unsuitable as the sole basis for a high-stakes decision.",
-    "Scores are reported per model on purpose; they are never merged into one "
-    "AI percentage.",
-    "EditLens reports an estimated AI-edit extent, not the probability that a "
-    "page was written by a model.",
-    "Every detector scores the same chunks, and each score is the mean over "
-    "them; --verbose shows the spread the mean hides.",
-    "Each verdict follows from that model's own percentage: under 40% reads as "
-    "human, 60% or more as AI-generated, and the band between is left "
-    "undecided. Human writing rarely scores 0%.",
+    "These are guesses, not proof. Detectors are wrong often enough that you "
+    "should not rely on them for anything that matters.",
+    "Each detector is shown separately on purpose. They are never combined "
+    "into one answer, because they measure different things and often "
+    "disagree.",
+    "Human writing can read as AI-generated, especially formal, technical, or "
+    "heavily edited text, and text by people writing in a second language.",
+)
+
+# The mechanics, for a reader who asked for them.
+VERBOSE_NOTES = (
+    "Percentages are each model's own confidence. Under 10% reads as almost "
+    "certainly human, under 40% probably human, 60% or more probably "
+    "AI-generated, 90% or more almost certainly so.",
+    "EditLens estimates how much of the text was AI-edited. That is a "
+    "different quantity from the others' probability that it was AI-written.",
+    "Every detector scores the same chunks; each percentage is the mean over "
+    "them, and the per-chunk spread is shown beside it.",
 )
 
 IMAGE_NOTES = (
-    "Organika/sdxl-detector recognizes SDXL-like generated imagery, so its "
-    "confidence is not a universal AI-image provenance determination.",
-    "Metadata findings are container heuristics, not detector predictions: a "
-    "missing generator field is neutral, not evidence of human origin.",
+    "The image detector was trained to spot one family of AI image generators. "
+    "A low score does not mean an image is real.",
+    "Metadata findings come from the file's own labelling, not from looking at "
+    "the picture. Most images carry none, and that means nothing either way.",
 )
 
 
@@ -88,16 +96,17 @@ def build_report(request: RunRequest) -> RunReport:
 
     notes = list(warnings)
     notes.extend(_unavailable_notes(text, images))
-    notes.extend(_agreement_notes(text))
-    if request.verbose:
-        notes.extend(_verbose_notes(content, device, request))
+    notes.extend(_agreement_notes(text, request.verbose))
     notes.extend(ADVISORY_NOTES)
     if request.include_images:
         notes.extend(IMAGE_NOTES)
+    if request.verbose:
+        notes.extend(VERBOSE_NOTES)
+        notes.extend(_verbose_notes(content, device, request))
     return RunReport(text=text, images=images, warnings=notes)
 
 
-def _agreement_notes(text: list) -> list[str]:
+def _agreement_notes(text: list, verbose: bool) -> list[str]:
     """Report whether the probability detectors actually agree, chunk by chunk.
 
     Two detectors are only comparable because they score the same chunks; a
@@ -112,16 +121,43 @@ def _agreement_notes(text: list) -> list[str]:
     for index, first in enumerate(comparable):
         for second in comparable[index + 1 :]:
             comparison = compare_detectors(first.chunk_scores, second.chunk_scores)
-            if comparison is not None:
-                notes.append(_agreement_sentence(first.name, second.name, comparison))
+            if comparison is None:
+                continue
+            notes.append(
+                _agreement_sentence(first, second, comparison)
+                if verbose
+                else _plain_agreement_sentence(first, second, comparison)
+            )
     return notes
 
 
-def _agreement_sentence(first: str, second: str, comparison) -> str:
+def _plain_agreement_sentence(first, second, comparison) -> str:
+    """Say whether the detectors back each other up, without the statistics."""
+    disagreed = comparison.chunks - comparison.agreed
+    if (first.score >= 0.5) != (second.score >= 0.5):
+        return (
+            f"{first.name} and {second.name} flatly contradict each other about "
+            "this page: one reads it as AI-generated and the other as human. "
+            "When they disagree this sharply, neither reading is trustworthy "
+            "here. Treat the page as unresolved."
+        )
+    if disagreed > comparison.chunks / 3:
+        return (
+            f"{first.name} and {second.name} reach the same overall answer but "
+            f"disagree about {disagreed} of the {comparison.chunks} sections "
+            "they read, so that answer is shaky."
+        )
+    return (
+        f"{first.name} and {second.name} independently reach the same answer, "
+        "which is mild support for it."
+    )
+
+
+def _agreement_sentence(first, second, comparison) -> str:
     """State the comparison in counts, which stay meaningful when kappa cannot."""
     disagreed = comparison.chunks - comparison.agreed
     head = (
-        f"{first} and {second} agree on {comparison.agreed} of "
+        f"{first.name} and {second.name} agree on {comparison.agreed} of "
         f"{comparison.chunks} shared chunks"
     )
     if comparison.degenerate:
@@ -141,9 +177,9 @@ def _unavailable_notes(text: list, images: list) -> list[str]:
     if not missing:
         return []
     return [
-        "This is a partial report: "
+        "Not every detector ran: "
         + ", ".join(missing)
-        + " could not run. The remaining results are unaffected."
+        + " could not start. The results shown are unaffected by that."
     ]
 
 
