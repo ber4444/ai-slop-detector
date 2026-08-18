@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import math
 import re
+from dataclasses import dataclass
 from typing import Callable, Protocol
 
 from .contracts import DetectorResult, ImageResult
@@ -12,14 +13,47 @@ from .webarchive import EmbeddedImage
 
 MAX_CHUNK_CHARACTERS = 6000
 
+
+@dataclass(frozen=True)
+class TextModel:
+    """A text detector plus the facts about it that its model card dictates."""
+
+    name: str
+    model_id: str
+    label: str
+    #: Chunk budget in characters, kept safely inside the model's token window
+    #: so text is chunked rather than silently truncated.
+    max_characters: int = MAX_CHUNK_CHARACTERS
+    #: Output index meaning "machine written"; None derives it from id2label,
+    #: which only works when the model publishes real label names.
+    ai_index: int | None = None
+    fast_tokenizer: bool = True
+
+
 TEXT_MODELS = (
-    ("Glyph", "ogmatrixllm/glyph-v1.1", "likely AI-generated"),
-    ("Vanguard", "ShantanuT01/vanguard-ai-text-detector", "likely AI-generated"),
+    # Glyph publishes placeholder labels; its card states LABEL_0 = human and
+    # LABEL_1 = AI, and requires the slow tokenizer plus a 512-token window.
+    TextModel(
+        name="Glyph",
+        model_id="ogmatrixllm/glyph-v1.1",
+        label="likely AI-generated",
+        max_characters=1600,
+        ai_index=1,
+        fast_tokenizer=False,
+    ),
+    # Vanguard is ModernBERT-large with a single sigmoid head emitting P(AI)
+    # directly, over an 8192-token window.
+    TextModel(
+        name="Vanguard",
+        model_id="ShantanuT01/vanguard-ai-text-detector",
+        label="likely AI-generated",
+    ),
 )
 EDITLENS_NAME = "EditLens"
 EDITLENS_BASE = "meta-llama/Llama-3.2-3B"
 EDITLENS_ADAPTER = "pangram/editlens_Llama-3.2-3B"
 EDITLENS_LABEL = "estimated AI-edit extent"
+EDITLENS_MAX_CHARACTERS = MAX_CHUNK_CHARACTERS
 IMAGE_MODEL = "Organika/sdxl-detector"
 
 NO_TEXT_DETAIL = "no readable text"
@@ -95,6 +129,21 @@ def softmax(logits: list[float]) -> list[float]:
     return [value / total for value in exponentials]
 
 
+def ai_probability(logits: list[float], ai_index: int | None) -> float:
+    """Read P(AI) from one model's raw output.
+
+    A single-logit head is a binary sigmoid classifier whose output already is
+    P(AI); anything wider is a softmax over classes, one of which means AI.
+    """
+    if not logits:
+        raise ValueError("a classifier must emit at least one logit")
+    if len(logits) == 1:
+        return 1.0 / (1.0 + math.exp(-logits[0]))
+    if ai_index is None:
+        raise ValueError("a multi-class classifier needs the AI label index")
+    return softmax(logits)[ai_index]
+
+
 def editlens_score(logits: list[float]) -> float:
     """Normalize EditLens bucket logits to an expected AI-edit extent in [0, 1]."""
     if len(logits) < 2:
@@ -114,7 +163,7 @@ def mean_score(scores: list[float]) -> float:
 class ModelLoader(Protocol):
     """Loads one model at a time so only one set of weights is resident."""
 
-    def load_text(self, model_id: str, device: str) -> Callable[[str], dict]:
+    def load_text(self, model: TextModel, device: str) -> Callable[[str], dict]:
         """Return a predictor mapping a chunk to `{"ai": probability}`."""
 
     def load_editlens(
@@ -129,26 +178,36 @@ class ModelLoader(Protocol):
 def run_text_detectors(
     text: str, loader: ModelLoader, device: str
 ) -> list[DetectorResult]:
-    """Run every text detector sequentially, keeping their meanings distinct."""
-    chunks = chunk_text(text)
-    if not chunks:
+    """Run every text detector sequentially, keeping their meanings distinct.
+
+    Each model is chunked to its own token window, so the chunk count can
+    legitimately differ between detectors.
+    """
+    if not chunk_text(text, MAX_CHUNK_CHARACTERS):
         return [
-            DetectorResult(name, 0.0, label, NO_TEXT_DETAIL)
-            for name, _, label in TEXT_MODELS
+            DetectorResult(model.name, 0.0, model.label, NO_TEXT_DETAIL)
+            for model in TEXT_MODELS
         ] + [DetectorResult(EDITLENS_NAME, 0.0, EDITLENS_LABEL, NO_TEXT_DETAIL)]
 
-    detail = _chunk_detail(chunks)
     results: list[DetectorResult] = []
-    for name, model_id, label in TEXT_MODELS:
-        predictor = loader.load_text(model_id, device)
+    for model in TEXT_MODELS:
+        chunks = chunk_text(text, model.max_characters)
+        predictor = loader.load_text(model, device)
         scores = [float(predictor(chunk)["ai"]) for chunk in chunks]
-        results.append(DetectorResult(name, mean_score(scores), label, detail))
+        results.append(
+            DetectorResult(
+                model.name, mean_score(scores), model.label, _chunk_detail(chunks)
+            )
+        )
         _release(loader, predictor)
 
+    chunks = chunk_text(text, EDITLENS_MAX_CHARACTERS)
     predictor = loader.load_editlens(EDITLENS_BASE, EDITLENS_ADAPTER, device)
     scores = [editlens_score(list(predictor(chunk))) for chunk in chunks]
     results.append(
-        DetectorResult(EDITLENS_NAME, mean_score(scores), EDITLENS_LABEL, detail)
+        DetectorResult(
+            EDITLENS_NAME, mean_score(scores), EDITLENS_LABEL, _chunk_detail(chunks)
+        )
     )
     _release(loader, predictor)
     return results
@@ -269,50 +328,50 @@ class TransformersLoader:
             self._torch = torch
         return self._torch
 
-    def load_text(self, model_id: str, device: str) -> Callable[[str], dict]:
+    def load_text(self, model: TextModel, device: str) -> Callable[[str], dict]:
         from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-        tokenizer = self._download(AutoTokenizer, model_id)
-        model = self._download(AutoModelForSequenceClassification, model_id)
-        model.eval().to(device)
-        ai_index = resolve_ai_label_index(model.config.id2label, model_id)
-        limit = _token_limit(tokenizer, model.config)
+        tokenizer = self._download(
+            AutoTokenizer, model.model_id, use_fast=model.fast_tokenizer
+        )
+        classifier = self._download(
+            AutoModelForSequenceClassification, model.model_id
+        )
+        classifier.eval().to(device)
+        limit = _token_limit(tokenizer, classifier.config)
+        ai_index = self._ai_index(model, classifier.config)
 
         def predict(chunk: str) -> dict:
             inputs = tokenizer(
                 chunk, return_tensors="pt", truncation=True, max_length=limit
             ).to(device)
             with self.torch.inference_mode():
-                logits = model(**inputs).logits[0]
-            probabilities = self.torch.softmax(logits.float(), dim=-1)
-            return {"ai": probabilities[ai_index].item()}
+                logits = classifier(**inputs).logits[0]
+            return {"ai": ai_probability(logits.float().tolist(), ai_index)}
 
         return predict
+
+    def _ai_index(self, model: TextModel, config: object) -> int | None:
+        """Decide which output means AI, trusting the model card over id2label."""
+        if getattr(config, "num_labels", 2) == 1:
+            return None  # single sigmoid head: the logit already means P(AI)
+        if model.ai_index is not None:
+            return model.ai_index
+        return resolve_ai_label_index(config.id2label, model.model_id)
 
     def load_editlens(
         self, base_id: str, adapter_id: str, device: str
     ) -> Callable[[str], list[float]]:
         from peft import PeftModel
-        from transformers import (
-            AutoConfig,
-            AutoModelForSequenceClassification,
-            AutoTokenizer,
-        )
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
-        adapter_config = self._download(AutoConfig, adapter_id)
-        labels = getattr(adapter_config, "num_labels", None)
-        if not labels or labels < 2:
-            raise RuntimeError(
-                f"{adapter_id}: the adapter does not declare its edit-extent "
-                "buckets, so its score cannot be normalized"
-            )
-
+        labels = self._editlens_bucket_count(adapter_id)
         tokenizer = self._download(AutoTokenizer, adapter_id, fallback_id=base_id)
         base = self._download(
             AutoModelForSequenceClassification,
             base_id,
             num_labels=labels,
-            torch_dtype=self.torch.float16 if device == "mps" else self.torch.float32,
+            dtype=self.torch.float16 if device == "mps" else self.torch.float32,
         )
         if base.config.pad_token_id is None:
             base.config.pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id
@@ -332,6 +391,31 @@ class TransformersLoader:
 
         return predict
 
+    def _editlens_bucket_count(self, adapter_id: str) -> int:
+        """Read the number of edit-extent buckets from the adapter's own head.
+
+        The adapter repository ships no `config.json`, so the bucket count comes
+        from the shape of the classification head saved with the adapter.
+        """
+        from huggingface_hub import hf_hub_download
+        from safetensors import safe_open
+
+        try:
+            weights = hf_hub_download(
+                adapter_id, "adapter_model.safetensors", token=self._token
+            )
+        except Exception as error:  # noqa: BLE001 - reported with actionable guidance
+            raise RuntimeError(_download_failure(adapter_id, error)) from error
+
+        with safe_open(weights, framework="pt") as adapter:
+            for key in adapter.keys():
+                if key.endswith(("score.weight", "classifier.weight")):
+                    return int(adapter.get_slice(key).get_shape()[0])
+        raise RuntimeError(
+            f"{adapter_id}: no classification head found in the adapter, so its "
+            "edit-extent buckets cannot be counted"
+        )
+
     def load_image(self, model_id: str, device: str) -> Callable[[bytes], float]:
         from io import BytesIO
 
@@ -345,7 +429,13 @@ class TransformersLoader:
 
         def predict(data: bytes) -> float:
             with Image.open(BytesIO(data)) as image:
-                pixels = processor(images=image.convert("RGB"), return_tensors="pt")
+                # PIL always hands back channels-last pixels; saying so keeps the
+                # processor from guessing wrong on very small images.
+                pixels = processor(
+                    images=image.convert("RGB"),
+                    return_tensors="pt",
+                    input_data_format="channels_last",
+                )
             pixels = pixels.to(device)
             with self.torch.inference_mode():
                 logits = model(**pixels).logits[0]

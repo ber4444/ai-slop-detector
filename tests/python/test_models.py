@@ -5,10 +5,12 @@ from slop_detector.models import (
     editlens_score,
     mean_score,
     run_image_detector,
+    ai_probability,
     resolve_ai_label_index,
     run_text_detectors,
     select_device,
 )
+from slop_detector.models import TEXT_MODELS
 from slop_detector.webarchive import EmbeddedImage
 
 
@@ -55,11 +57,13 @@ class FakeLoader:
 
     def __init__(self, image_score=0.9, image_error=None):
         self.loaded = []
+        self.chunk_limits = []
         self.image_score = image_score
         self.image_error = image_error
 
-    def load_text(self, model_id, device):
-        self.loaded.append(model_id)
+    def load_text(self, model, device):
+        self.loaded.append(model.model_id)
+        self.chunk_limits.append(model.max_characters)
         return lambda chunk: {"ai": 0.8}
 
     def load_editlens(self, base_id, adapter_id, device):
@@ -154,3 +158,39 @@ def test_ai_label_index_comes_from_each_model_id2label():
 def test_ai_label_index_refuses_to_guess_an_unknown_label_set():
     with pytest.raises(RuntimeError, match="vanguard"):
         resolve_ai_label_index({0: "LABEL_0", 1: "LABEL_1"}, "vanguard")
+
+
+def test_ai_probability_reads_a_single_sigmoid_head_as_p_of_ai():
+    assert ai_probability([0.0], None) == 0.5
+    assert ai_probability([2.0], None) > 0.88
+    assert ai_probability([-2.0], None) < 0.12
+
+
+def test_ai_probability_softmaxes_a_multi_class_head_at_the_ai_index():
+    assert ai_probability([0.0, 0.0], 1) == 0.5
+    assert ai_probability([0.0, 10.0], 1) > 0.99
+    assert ai_probability([0.0, 10.0], 0) < 0.01
+
+
+def test_ai_probability_refuses_a_multi_class_head_without_an_index():
+    with pytest.raises(ValueError):
+        ai_probability([0.0, 0.0], None)
+
+
+def test_glyph_is_pinned_to_its_documented_label_window_and_tokenizer():
+    glyph = next(model for model in TEXT_MODELS if model.name == "Glyph")
+
+    assert glyph.ai_index == 1
+    assert glyph.fast_tokenizer is False
+    assert glyph.max_characters <= 2048
+
+
+def test_each_detector_is_chunked_to_its_own_token_window():
+    loader = FakeLoader()
+    text = "Sentence number one. " * 400
+
+    results = run_text_detectors(text, loader, "cpu")
+
+    assert loader.chunk_limits == [1600, 6000]
+    glyph, vanguard = results[0], results[1]
+    assert int(glyph.detail.split()[0]) > int(vanguard.detail.split()[0])

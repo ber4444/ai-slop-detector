@@ -12,8 +12,11 @@
     <dict>
       <key>WebResourceMIMEType</key><string>image/png</string>
       <key>WebResourceData</key>
-      <data>iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB
-9Y9JZQAAAABJRU5ErkJggg==</data>
+      <data>
+iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAGXRFWHRTb2Z0d2FyZQBTdGFibGUg
+RGlmZnVzaW9uPQC0PAAAACJJREFUeJxjZGBoEGBgIB6xgAhSAMuoBiIAy6gGIgDtNQAAHgoCnkJw
+zTsAAAAASUVORK5CYII=
+      </data>
     </dict>
   </array>
 </dict>
