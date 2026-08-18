@@ -1,0 +1,4 @@
+[tool.pytest.ini_options]
+pythonpath = ["worker"]
+testpaths = ["tests/python", "tests/kotlin"]
+
