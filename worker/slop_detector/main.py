@@ -27,6 +27,8 @@ ADVISORY_NOTES = (
     "page was written by a model.",
     "Each text score is the mean of that model's chunk scores; the chunk count "
     "beside it is that model's own, since each is chunked to its token window.",
+    "A percentage names what was measured, not a verdict: below 50% the model "
+    "is calling the text human, and human writing rarely scores 0%.",
 )
 
 IMAGE_NOTES = (

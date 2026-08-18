@@ -36,7 +36,7 @@ TEXT_MODELS = (
     TextModel(
         name="Glyph",
         model_id="ogmatrixllm/glyph-v1.1",
-        label="likely AI-generated",
+        label="probability AI-generated",
         max_characters=1600,
         ai_index=1,
         fast_tokenizer=False,
@@ -46,7 +46,7 @@ TEXT_MODELS = (
     TextModel(
         name="Vanguard",
         model_id="ShantanuT01/vanguard-ai-text-detector",
-        label="likely AI-generated",
+        label="probability AI-generated",
     ),
 )
 EDITLENS_NAME = "EditLens"

@@ -51,8 +51,8 @@ also need the permission covering read access to public gated repositories you
 have been granted; without it, EditLens and Llama fail with a 403 even after you
 have accepted their licenses.
 
-If access is missing, the run stops with a nonzero exit code and names both
-gated pages.
+If access is missing, EditLens is reported as unavailable with both gated pages
+named, and the other detectors still run — see [Partial reports](#partial-reports).
 
 ## First run
 
@@ -99,8 +99,8 @@ keep their scores, and a note names the gap:
 
 ```text
 Text detectors
-  Glyph: 8.2% — likely AI-generated (1 chunk)
-  Vanguard: 3.9% — likely AI-generated (1 chunk)
+  Glyph: 8.2% — probability AI-generated (1 chunk)
+  Vanguard: 3.9% — probability AI-generated (1 chunk)
   EditLens: unavailable
       pangram/editlens_Llama-3.2-3B: GatedRepoError: 403 Client Error.
       Accept the access conditions for ... 
@@ -122,7 +122,13 @@ text results are unaffected.
 - **EditLens** reports an *estimated AI-edit extent*, not a probability that the
   page was written by a model.
 - **Glyph** and **Vanguard** report their own probability that the text is
-  machine-written; they can and will disagree.
+  machine-written; they can and will disagree. The percentage is the quantity
+  being measured, not a verdict: **below 50% means that model is calling the
+  text human**, and 21% is a human call, not a weak AI call.
+- Neither model reads 0% on human text. Formulaic, heavily edited prose —
+  corporate blogs, press releases, academic abstracts — scores higher than
+  casual writing while still landing under the threshold. Glyph's own card
+  reports 90.8% accuracy on arXiv abstracts against 100% on personal blogs.
 - Long text is split at sentence and paragraph boundaries into model-safe
   chunks, and each model's reported score is the mean over its chunks. The chunk
   count is printed next to each score.
