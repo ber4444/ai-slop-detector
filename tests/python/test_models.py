@@ -6,6 +6,7 @@ from slop_detector.models import (
     mean_score,
     run_image_detector,
     ai_probability,
+    verdict,
     resolve_ai_label_index,
     run_text_detectors,
     select_device,
@@ -118,7 +119,7 @@ def test_image_detector_keeps_model_scores_and_metadata_flags_separate(png_bytes
 
     assert loader.loaded == ["Organika/sdxl-detector"]
     assert results[0].score == 0.9
-    assert results[0].label == "artificial"
+    assert results[0].label == "likely artificial"
     assert results[0].metadata_flags == ["Software: Stable Diffusion"]
     assert results[0].skipped_reason is None
 
@@ -235,7 +236,7 @@ def test_an_unavailable_detector_keeps_the_guidance_its_error_carried():
     editlens = next(result for result in results if result.name == "EditLens")
     assert "gated repository" in editlens.detail
     assert "Accept the terms." in editlens.detail
-    assert editlens.label == "estimated AI-edit extent"
+    assert editlens.label == "not assessed"
 
 
 def test_every_detector_can_fail_independently():
@@ -271,3 +272,34 @@ def test_verbose_adds_the_raw_labels_the_model_emitted():
 
     assert quiet[0].detail == "1 chunk"
     assert loud[0].detail == "1 chunk; raw labels LABEL_1x1"
+
+
+def test_verdict_states_the_plain_reading_on_each_side_of_the_threshold():
+    assert verdict(0.216) == "likely human"
+    assert verdict(0.371) == "likely human"
+    assert verdict(0.0) == "likely human"
+    assert verdict(0.9) == "likely AI-generated"
+    assert verdict(1.0) == "likely AI-generated"
+
+
+def test_verdict_declines_to_commit_near_the_decision_threshold():
+    assert verdict(0.45) == "too close to call"
+    assert verdict(0.55) == "too close to call"
+    assert verdict(0.5) == "too close to call"
+
+
+def test_verdict_uses_the_image_models_own_vocabulary():
+    assert verdict(0.91, "artificial") == "likely artificial"
+    assert verdict(0.05, "artificial") == "likely human"
+
+
+def test_a_scored_detector_is_labelled_with_its_verdict_not_a_fixed_string():
+    class HumanishLoader(FakeLoader):
+        def load_text(self, model, device):
+            super().load_text(model, device)
+            return lambda chunk: {"ai": 0.216}
+
+    results = run_text_detectors("A sentence.", HumanishLoader(), "cpu")
+
+    assert results[0].label == "likely human"
+    assert results[1].label == "likely human"

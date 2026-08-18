@@ -14,13 +14,30 @@ from .webarchive import EmbeddedImage
 MAX_CHUNK_CHARACTERS = 6000
 
 
+# Both text detectors and Organika document a 0.5 decision threshold. A verdict
+# is only stated outside a band around it, because a score of 0.51 is not a
+# meaningfully different reading from 0.49.
+AI_VERDICT_THRESHOLD = 0.60
+HUMAN_VERDICT_THRESHOLD = 0.40
+UNDECIDED_VERDICT = "too close to call"
+NOT_ASSESSED_LABEL = "not assessed"
+
+
+def verdict(score: float, ai_word: str = "AI-generated", human_word: str = "human") -> str:
+    """Turn a probability into the plain reading a person wants from it."""
+    if score >= AI_VERDICT_THRESHOLD:
+        return f"likely {ai_word}"
+    if score < HUMAN_VERDICT_THRESHOLD:
+        return f"likely {human_word}"
+    return UNDECIDED_VERDICT
+
+
 @dataclass(frozen=True)
 class TextModel:
     """A text detector plus the facts about it that its model card dictates."""
 
     name: str
     model_id: str
-    label: str
     #: Chunk budget in characters, kept safely inside the model's token window
     #: so text is chunked rather than silently truncated.
     max_characters: int = MAX_CHUNK_CHARACTERS
@@ -36,7 +53,6 @@ TEXT_MODELS = (
     TextModel(
         name="Glyph",
         model_id="ogmatrixllm/glyph-v1.1",
-        label="probability AI-generated",
         max_characters=1600,
         ai_index=1,
         fast_tokenizer=False,
@@ -46,7 +62,6 @@ TEXT_MODELS = (
     TextModel(
         name="Vanguard",
         model_id="ShantanuT01/vanguard-ai-text-detector",
-        label="probability AI-generated",
     ),
 )
 EDITLENS_NAME = "EditLens"
@@ -187,9 +202,9 @@ def run_text_detectors(
     """
     if not chunk_text(text, MAX_CHUNK_CHARACTERS):
         return [
-            DetectorResult(model.name, 0.0, model.label, NO_TEXT_DETAIL)
+            DetectorResult(model.name, 0.0, NOT_ASSESSED_LABEL, NO_TEXT_DETAIL)
             for model in TEXT_MODELS
-        ] + [DetectorResult(EDITLENS_NAME, 0.0, EDITLENS_LABEL, NO_TEXT_DETAIL)]
+        ] + [DetectorResult(EDITLENS_NAME, 0.0, NOT_ASSESSED_LABEL, NO_TEXT_DETAIL)]
 
     results: list[DetectorResult] = []
     for model in TEXT_MODELS:
@@ -209,15 +224,17 @@ def _score_text_model(
         predictor = loader.load_text(model, device)
         predictions = [predictor(chunk) for chunk in chunks]
     except Exception as error:  # noqa: BLE001 - one detector must not stop the rest
-        return DetectorResult(model.name, None, model.label, _unavailable(error))
+        return DetectorResult(
+            model.name, None, NOT_ASSESSED_LABEL, _unavailable(error)
+        )
     finally:
         _release(loader, predictor)
 
-    scores = [float(prediction["ai"]) for prediction in predictions]
+    score = mean_score([float(prediction["ai"]) for prediction in predictions])
     detail = _chunk_detail(chunks)
     if verbose:
         detail = "; ".join(filter(None, [detail, _raw_label_detail(predictions)]))
-    return DetectorResult(model.name, mean_score(scores), model.label, detail)
+    return DetectorResult(model.name, score, verdict(score), detail)
 
 
 def _score_editlens(text: str, loader: ModelLoader, device: str) -> DetectorResult:
@@ -227,7 +244,9 @@ def _score_editlens(text: str, loader: ModelLoader, device: str) -> DetectorResu
         predictor = loader.load_editlens(EDITLENS_BASE, EDITLENS_ADAPTER, device)
         scores = [editlens_score(list(predictor(chunk))) for chunk in chunks]
     except Exception as error:  # noqa: BLE001 - one detector must not stop the rest
-        return DetectorResult(EDITLENS_NAME, None, EDITLENS_LABEL, _unavailable(error))
+        return DetectorResult(
+            EDITLENS_NAME, None, NOT_ASSESSED_LABEL, _unavailable(error)
+        )
     finally:
         _release(loader, predictor)
 
@@ -277,8 +296,9 @@ def run_image_detector(
                 ImageResult(image.index, None, None, flags, _skip_reason(error))
             )
             continue
-        label = "artificial" if score >= 0.5 else "human"
-        results.append(ImageResult(image.index, score, label, flags, None))
+        results.append(
+            ImageResult(image.index, score, verdict(score, "artificial"), flags, None)
+        )
     _release(loader, predictor)
     return results
 

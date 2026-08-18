@@ -17,7 +17,7 @@ REPORT = {
         {
             "name": "Glyph",
             "score": 0.75,
-            "label": "probability AI-generated",
+            "label": "likely AI-generated",
             "detail": "1 chunks",
         },
         {
@@ -31,7 +31,7 @@ REPORT = {
         {
             "index": 0,
             "score": 0.9,
-            "label": "artificial",
+            "label": "likely artificial",
             "metadata_flags": ["Software: Stable Diffusion"],
             "skipped_reason": None,
         },
@@ -88,7 +88,7 @@ def test_kotlin_cli_renders_worker_report_and_forwards_images_flag(tmp_path):
     result, received = run_cli(tmp_path, "page.webarchive", "--images")
 
     assert result.returncode == 0, result.stderr
-    assert "Glyph: 75.0% — probability AI-generated" in result.stdout
+    assert "Glyph: 75.0% — likely AI-generated" in result.stdout
     assert "EditLens: 20.0% — estimated AI-edit extent" in result.stdout
     assert "Detector scores are advisory." in result.stdout
     arguments = received.read_text()
@@ -102,7 +102,7 @@ def test_kotlin_cli_keeps_image_scores_metadata_and_skips_in_separate_sections(
     result, _ = run_cli(tmp_path, "page.webarchive", "--images")
 
     assert "Image detectors" in result.stdout
-    assert "Image 0: 90.0% — artificial" in result.stdout
+    assert "Image 0: 90.0% — likely artificial" in result.stdout
     assert "Image 1: skipped (OSError: broken)" in result.stdout
     assert "Metadata heuristics" in result.stdout
     assert "Software: Stable Diffusion" in result.stdout
@@ -168,7 +168,7 @@ def test_kotlin_cli_renders_an_unavailable_detector_with_its_reason(tmp_path):
     result, _ = run_cli(tmp_path, "page.webarchive", report=report)
 
     assert result.returncode == 0
-    assert "Glyph: 75.0% — probability AI-generated" in result.stdout
+    assert "Glyph: 75.0% — likely AI-generated" in result.stdout
     assert "EditLens: unavailable" in result.stdout
     assert "GatedRepoError: 403" in result.stdout
     assert "Accept the access conditions for both model pages." in result.stdout
