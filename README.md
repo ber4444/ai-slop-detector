@@ -215,8 +215,9 @@ The code here is MIT — see [LICENSE](LICENSE). That covers this repository's
 source only.
 
 It does not cover the models, and it cannot: no weights are stored in or
-distributed by this repository. Each model is downloaded from Hugging Face
-under its own terms, and two of them forbid commercial use outright.
+distributed by this repository. Each is downloaded from Hugging Face under its
+own terms, and two of them forbid commercial use outright. Full detail in
+[THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md).
 
 | Model | License |
 | --- | --- |
