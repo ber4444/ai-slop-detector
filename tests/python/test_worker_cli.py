@@ -1,0 +1,134 @@
+import json
+
+import pytest
+
+from slop_detector.contracts import DetectorResult, ImageResult
+from slop_detector.main import main, read_hf_token
+
+
+def fake_content(text="Text.", images=(object(),)):
+    return type("Content", (), {"text": text, "images": list(images)})()
+
+
+@pytest.fixture
+def stub_worker(monkeypatch):
+    """Replace archive parsing, device selection, and models with stubs."""
+    monkeypatch.setattr("slop_detector.main.parse_webarchive", lambda _: fake_content())
+    monkeypatch.setattr("slop_detector.main.select_runtime_device", lambda: ("mps", []))
+    monkeypatch.setattr("slop_detector.main.read_hf_token", lambda: "token")
+    monkeypatch.setattr("slop_detector.main.TransformersLoader", lambda token: object())
+    monkeypatch.setattr("slop_detector.main.run_text_detectors", lambda *args: [])
+    return monkeypatch
+
+
+def test_worker_emits_machine_readable_report_without_images(
+    stub_worker, capsys, tmp_path
+):
+    assert main(["--archive", str(tmp_path / "page.webarchive")]) == 0
+
+    assert json.loads(capsys.readouterr().out)["images"] == []
+
+
+def test_worker_reports_individual_bad_images_without_discarding_text(
+    stub_worker, capsys, tmp_path
+):
+    stub_worker.setattr("slop_detector.main.run_text_detectors", lambda *args: [])
+    stub_worker.setattr(
+        "slop_detector.main.run_image_detector",
+        lambda *args: [ImageResult(0, None, None, [], "OSError: broken")],
+    )
+
+    assert main(["--archive", str(tmp_path / "page.webarchive"), "--images"]) == 0
+
+    images = json.loads(capsys.readouterr().out)["images"]
+    assert images == [
+        {
+            "index": 0,
+            "score": None,
+            "label": None,
+            "metadata_flags": [],
+            "skipped_reason": "OSError: broken",
+        }
+    ]
+
+
+def test_worker_always_prints_the_advisory_notes(stub_worker, capsys, tmp_path):
+    main(["--archive", str(tmp_path / "page.webarchive")])
+
+    warnings = json.loads(capsys.readouterr().out)["warnings"]
+    assert any("advisory" in warning for warning in warnings)
+
+
+def test_worker_reports_verbose_extraction_counts_only_when_asked(
+    stub_worker, capsys, tmp_path
+):
+    stub_worker.setattr(
+        "slop_detector.main.run_text_detectors",
+        lambda *args: [DetectorResult("Glyph", 0.5, "likely AI-generated", "1 chunk")],
+    )
+
+    main(["--archive", str(tmp_path / "page.webarchive"), "--verbose"])
+    verbose = json.loads(capsys.readouterr().out)["warnings"]
+    main(["--archive", str(tmp_path / "page.webarchive")])
+    quiet = json.loads(capsys.readouterr().out)["warnings"]
+
+    assert any("characters of readable text" in warning for warning in verbose)
+    assert not any("characters of readable text" in warning for warning in quiet)
+
+
+def test_worker_rejects_an_invalid_archive_with_exit_code_two(
+    stub_worker, capsys, tmp_path
+):
+    def refuse(_):
+        raise ValueError("Invalid webarchive: not a plist")
+
+    stub_worker.setattr("slop_detector.main.parse_webarchive", refuse)
+
+    assert main(["--archive", str(tmp_path / "page.webarchive")]) == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Invalid webarchive" in captured.err
+
+
+def test_worker_reports_model_failures_with_exit_code_one(
+    stub_worker, capsys, tmp_path
+):
+    def fail(*args):
+        raise RuntimeError("ogmatrixllm/glyph-v1.1: gated repository")
+
+    stub_worker.setattr("slop_detector.main.run_text_detectors", fail)
+
+    assert main(["--archive", str(tmp_path / "page.webarchive")]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "glyph-v1.1" in captured.err
+
+
+def test_missing_token_names_the_gitignored_token_file(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(RuntimeError, match=r"\.secrets/huggingface\.token"):
+        read_hf_token()
+
+
+def test_blank_token_file_is_rejected_without_echoing_its_contents(
+    monkeypatch, tmp_path
+):
+    secrets = tmp_path / ".secrets"
+    secrets.mkdir()
+    (secrets / "huggingface.token").write_text("   \n")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(RuntimeError, match=r"\.secrets/huggingface\.token"):
+        read_hf_token()
+
+
+def test_token_is_read_trimmed_from_the_secrets_directory(monkeypatch, tmp_path):
+    secrets = tmp_path / ".secrets"
+    secrets.mkdir()
+    (secrets / "huggingface.token").write_text("hf_example\n")
+    monkeypatch.chdir(tmp_path)
+
+    assert read_hf_token() == "hf_example"
