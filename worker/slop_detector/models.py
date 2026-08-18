@@ -337,6 +337,11 @@ class TransformersLoader:
         classifier = self._download(
             AutoModelForSequenceClassification, model.model_id
         )
+        # ModernBERT requests torch.compile, which has no MPS path. Declining it
+        # before the first forward keeps the model from warning about it; the
+        # compiled path was never available on Metal anyway.
+        if device != "cuda" and getattr(classifier.config, "reference_compile", False):
+            classifier.config.reference_compile = False
         classifier.eval().to(device)
         limit = _token_limit(tokenizer, classifier.config)
         ai_index = self._ai_index(model, classifier.config)
@@ -422,7 +427,9 @@ class TransformersLoader:
         from PIL import Image
         from transformers import AutoImageProcessor, AutoModelForImageClassification
 
-        processor = self._download(AutoImageProcessor, model_id)
+        # Organika saved a slow processor; asking for it explicitly keeps the
+        # preprocessing the model was trained with, and stays quiet about it.
+        processor = self._download(AutoImageProcessor, model_id, use_fast=False)
         model = self._download(AutoModelForImageClassification, model_id)
         model.eval().to(device)
         ai_index = resolve_ai_label_index(model.config.id2label, model_id)
