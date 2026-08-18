@@ -1,10 +1,7 @@
-beautifulsoup4>=4.13,<5
-Pillow>=11,<12
 torch>=2.7,<3
 transformers>=4.56,<5
 peft>=0.16,<1
 huggingface_hub>=0.33,<1
-defusedxml>=0.7,<1
 # SentencePiece tokenizers (Glyph) need both to convert spm.model.
 sentencepiece>=0.2,<1
 protobuf>=4,<7

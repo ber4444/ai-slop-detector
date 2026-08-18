@@ -4,7 +4,6 @@ from slop_detector.models import (
     chunk_text,
     editlens_score,
     mean_score,
-    run_image_detector,
     ai_probability,
     cohens_kappa,
     compare_detectors,
@@ -16,7 +15,6 @@ from slop_detector.models import (
 )
 from slop_detector.models import TEXT_MODELS, chunk_sources
 from slop_detector.sources import Source
-from slop_detector.webarchive import EmbeddedImage
 
 
 def detect(text, loader, device="cpu", verbose=False):
@@ -24,6 +22,11 @@ def detect(text, loader, device="cpu", verbose=False):
     return run_text_detectors(
         chunk_sources([Source("test.md", text)]), loader, device, verbose
     )
+
+
+def survey(sources, loader, device="cpu", verbose=False):
+    """Score several files as a corpus."""
+    return run_text_detectors(chunk_sources(sources), loader, device, verbose)
 
 
 def test_chunk_text_keeps_sentences_and_honors_the_limit():
@@ -67,11 +70,9 @@ def test_select_device_prefers_mps_then_cpu():
 class FakeLoader:
     """Records load order so tests can assert models run one at a time."""
 
-    def __init__(self, image_score=0.9, image_error=None):
+    def __init__(self):
         self.loaded = []
         self.chunks_seen = {}
-        self.image_score = image_score
-        self.image_error = image_error
 
     def load_text(self, model, device):
         self.loaded.append(model.model_id)
@@ -82,16 +83,6 @@ class FakeLoader:
         self.loaded.append(adapter_id)
         seen = self.chunks_seen.setdefault("EditLens", [])
         return lambda chunk: (seen.append(chunk), [0.0, 0.0, 0.0])[1]
-
-    def load_image(self, model_id, device):
-        self.loaded.append(model_id)
-
-        def predict(data):
-            if self.image_error is not None:
-                raise self.image_error
-            return self.image_score
-
-        return predict
 
 
 def test_text_detectors_run_sequentially_and_keep_their_distinct_meaning():
@@ -118,47 +109,6 @@ def test_text_detectors_report_empty_text_without_calling_a_model():
     assert loader.loaded == []
     assert [result.detail for result in results] == ["no readable text"] * 3
     assert [result.score for result in results] == [0.0, 0.0, 0.0]
-
-
-def test_image_detector_keeps_model_scores_and_metadata_flags_separate(png_bytes):
-    loader = FakeLoader(image_score=0.9)
-
-    results = run_image_detector(
-        [EmbeddedImage(0, "image/png", png_bytes(Software="Stable Diffusion"))],
-        loader,
-        "mps",
-    )
-
-    assert loader.loaded == ["Organika/sdxl-detector"]
-    assert results[0].score == 0.9
-    assert results[0].label == "almost certainly AI-generated"
-    assert results[0].metadata_flags == ["Software: Stable Diffusion"]
-    assert results[0].skipped_reason is None
-
-
-def test_image_detector_skips_an_unreadable_image_without_failing_the_run(png_bytes):
-    loader = FakeLoader(image_error=OSError("cannot identify image file"))
-
-    results = run_image_detector(
-        [
-            EmbeddedImage(0, "image/png", b"not an image"),
-            EmbeddedImage(1, "image/png", png_bytes()),
-        ],
-        loader,
-        "cpu",
-    )
-
-    assert [result.index for result in results] == [0, 1]
-    assert all(result.score is None for result in results)
-    assert all(result.skipped_reason for result in results)
-    assert loader.loaded == ["Organika/sdxl-detector"]
-
-
-def test_image_detector_without_images_loads_nothing():
-    loader = FakeLoader()
-
-    assert run_image_detector([], loader, "mps") == []
-    assert loader.loaded == []
 
 
 def test_ai_label_index_comes_from_each_model_id2label():
@@ -215,10 +165,9 @@ def test_every_detector_scores_one_shared_partition():
 class BrokenLoader(FakeLoader):
     """Fails the detectors named in `broken`, succeeds for the rest."""
 
-    def __init__(self, *broken, image_load_error=None):
+    def __init__(self, *broken):
         super().__init__()
         self.broken = set(broken)
-        self.image_load_error = image_load_error
 
     def load_text(self, model, device):
         if model.name in self.broken:
@@ -229,11 +178,6 @@ class BrokenLoader(FakeLoader):
         if "EditLens" in self.broken:
             raise RuntimeError(f"{adapter_id}: gated repository\nAccept the terms.")
         return super().load_editlens(base_id, adapter_id, device)
-
-    def load_image(self, model_id, device):
-        if self.image_load_error is not None:
-            raise self.image_load_error
-        return super().load_image(model_id, device)
 
 
 def test_a_gated_detector_does_not_discard_the_detectors_that_ran():
@@ -267,20 +211,6 @@ def test_every_detector_can_fail_independently():
     )
 
     assert [result.score for result in results] == [None, None, None]
-
-
-def test_an_unloadable_image_model_skips_images_but_keeps_their_metadata(png_bytes):
-    loader = BrokenLoader(image_load_error=RuntimeError("Organika: gated repository"))
-
-    results = run_image_detector(
-        [EmbeddedImage(0, "image/png", png_bytes(Software="Stable Diffusion"))],
-        loader,
-        "mps",
-    )
-
-    assert results[0].score is None
-    assert "gated repository" in results[0].skipped_reason
-    assert results[0].metadata_flags == ["Software: Stable Diffusion"]
 
 
 def test_verbose_exposes_the_spread_the_mean_hides():
@@ -389,3 +319,40 @@ def test_comparison_reports_a_real_kappa_when_both_detectors_vary():
     assert comparison.degenerate is False
     assert comparison.agreed == 3
     assert 0.0 < comparison.kappa < 1.0
+
+
+def test_survey_scores_each_file_on_its_own():
+    class SplitLoader(FakeLoader):
+        def load_text(self, model, device):
+            super().load_text(model, device)
+            # Score by which file the chunk came from: "clean" text is human,
+            # "sloppy" text is AI.
+            return lambda chunk: {"ai": 0.95 if "sloppy" in chunk else 0.05}
+
+    sources = [
+        Source("clean.md", "A clean sentence here."),
+        Source("sloppy.md", "This is sloppy prose."),
+    ]
+
+    glyph = survey(sources, SplitLoader())[0]
+
+    assert [f.name for f in glyph.file_scores] == ["clean.md", "sloppy.md"]
+    assert glyph.file_scores[0].score < 0.5
+    assert glyph.file_scores[1].score >= 0.5
+
+
+def test_per_file_scores_average_a_files_own_chunks():
+    sources = [Source("long.md", "A sentence about things. " * 400)]
+
+    glyph = survey(sources, FakeLoader())[0]
+
+    assert len(glyph.file_scores) == 1
+    assert glyph.file_scores[0].chunks == len(glyph.chunk_scores)
+    assert glyph.file_scores[0].score == 0.8
+
+
+def test_an_unavailable_detector_has_no_per_file_scores():
+    results = survey([Source("a.md", "One.")], BrokenLoader("EditLens"))
+
+    editlens = next(r for r in results if r.name == "EditLens")
+    assert editlens.file_scores == []

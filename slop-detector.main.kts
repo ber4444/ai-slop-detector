@@ -14,13 +14,14 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
 val USAGE = """
-Usage: kotlin slop-detector.main.kts <file|glob|directory>... [--images] [--verbose]
+Usage: kotlin slop-detector.main.kts <file|glob|directory>... [--verbose]
 
-  Accepts .webarchive and Markdown (.md, .markdown, .mdown, .mkd) files.
-  Several inputs, a glob such as '*.md', or a directory are scored together
-  as one collective answer; --verbose breaks it down per file.
+  Accepts Markdown (.md, .markdown, .mdown, .mkd) files.
+  Give several files, a glob such as '*.md', or a directory to survey a corpus:
+  each file is scored on its own, and the report shows how many files each
+  detector flags, with a histogram. --verbose lists every file's score.
 """.trim()
-val KNOWN_FLAGS = setOf("--images", "--verbose")
+val KNOWN_FLAGS = setOf("--verbose")
 
 val repoRoot: File = File(System.getProperty("user.dir")).absoluteFile
 val skipBootstrap: Boolean = System.getenv("SLOP_DETECTOR_SKIP_BOOTSTRAP") == "1"
@@ -70,7 +71,7 @@ fun bootstrapPython() {
     }
 }
 
-val TEXT_SUFFIXES = listOf(".webarchive", ".md", ".markdown", ".mdown", ".mkd")
+val TEXT_SUFFIXES = listOf(".md", ".markdown", ".mdown", ".mkd")
 
 fun File.isSupported(): Boolean = TEXT_SUFFIXES.any { name.lowercase().endsWith(it) }
 
@@ -100,39 +101,48 @@ fun JsonObject.whole(key: String): Int? = this[key]?.jsonPrimitive?.intOrNull
 fun JsonObject.strings(key: String): List<String> =
     this[key]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
 
-fun renderReport(payload: String, inputs: List<File>, verbose: Boolean) {
-    val report = try {
-        Json.parseToJsonElement(payload).jsonObject
-    } catch (error: Exception) {
-        fail("The worker did not return a readable report: ${error.message}", 1)
+val EDITLENS = "EditLens"
+
+class FileScore(val name: String, val score: Double?)
+
+fun JsonObject.fileScores(): List<FileScore> =
+    this["file_scores"]?.jsonArray.orEmpty().map {
+        val file = it.jsonObject
+        FileScore(file.text("name") ?: "?", file.number("score"))
     }
 
-    // Without --verbose the report is prose: a reader who does not work with
-    // these models gets the plain reading, not the percentage behind it.
-    val lines = mutableListOf<String>()
-    lines += if (inputs.size == 1) {
-        "Read: ${inputs.single().path}"
-    } else {
-        "Read: ${inputs.size} files, scored together as one answer"
+/** A ten-bucket bar chart of per-file scores, 0-10% .. 90-100%. */
+fun histogram(files: List<FileScore>): List<String> {
+    val scored = files.mapNotNull { it.score }
+    if (scored.isEmpty()) return emptyList()
+    val buckets = IntArray(10)
+    for (score in scored) buckets[minOf(9, (score * 10).toInt())]++
+    val widest = buckets.max().coerceAtLeast(1)
+    return buckets.mapIndexed { index, count ->
+        val filled = (count.toDouble() / widest * 24).toInt()
+        val bar = "█".repeat(filled) + if (count > 0 && filled == 0) "▏" else ""
+        val range = "${index * 10}–${index * 10 + 10}%"
+        "    %-8s %-24s %d".format(range, bar, count)
     }
-    if (inputs.size > 1 && verbose) inputs.forEach { lines += "  ${it.path}" }
-    lines += ""
+}
+
+fun renderUnavailable(name: String, detail: String?, lines: MutableList<String>) {
+    // A detector that could not run explains itself over as many lines as its
+    // error needs, rather than being squeezed into parentheses.
+    lines += "$name: could not run"
+    detail?.lines()?.filter { it.isNotBlank() }?.forEach { lines += "    ${it.trim()}" }
+}
+
+/** One file: a plain per-detector verdict, no distribution. */
+fun renderSingle(detectors: List<JsonObject>, verbose: Boolean, lines: MutableList<String>) {
     lines += "What the text detectors think"
-    val detectors = report["text"]?.jsonArray.orEmpty()
-    if (detectors.isEmpty()) {
-        lines += "  (no text detector results)"
-    }
-    for (element in detectors) {
-        val detector = element.jsonObject
+    for (detector in detectors) {
         val name = detector.text("name") ?: "unknown"
         val score = detector.number("score")
         val label = detector.text("label") ?: ""
         val detail = detector.text("detail")
         if (score == null) {
-            // A detector that could not run explains itself over as many lines
-            // as its error needs, rather than being squeezed into parentheses.
-            lines += "  $name: could not run"
-            detail?.lines()?.filter { it.isNotBlank() }?.forEach { lines += "      ${it.trim()}" }
+            renderUnavailable("  $name", detail, lines)
         } else if (verbose) {
             val head = "  $name: ${percent(score)} — $label"
             lines += if (detail.isNullOrBlank()) head else "$head ($detail)"
@@ -140,34 +150,61 @@ fun renderReport(payload: String, inputs: List<File>, verbose: Boolean) {
             lines += "  $name: $label"
         }
     }
+}
 
-    val images = report["images"]?.jsonArray.orEmpty().map { it.jsonObject }
-    if (images.isNotEmpty()) {
+/** Many files: how many each detector flags, a histogram, and the flagged files. */
+fun renderSurvey(detectors: List<JsonObject>, total: Int, verbose: Boolean, lines: MutableList<String>) {
+    for (detector in detectors) {
+        val name = detector.text("name") ?: "unknown"
+        val score = detector.number("score")
         lines += ""
-        lines += "What the image detector thinks"
-        for (image in images) {
-            val index = image.whole("index") ?: 0
-            val skipped = image.text("skipped_reason")
-            val score = image.number("score")
-            val label = image.text("label") ?: ""
-            lines += when {
-                skipped != null -> "  Image $index: skipped ($skipped)"
-                score == null -> "  Image $index: unavailable"
-                verbose -> "  Image $index: ${percent(score)} — $label"
-                else -> "  Image $index: $label"
-            }
+        if (score == null) {
+            renderUnavailable(name, detector.text("detail"), lines)
+            continue
         }
+        val files = detector.fileScores()
+        val scored = files.filter { it.score != null }
 
-        val flagged = images.filter { it.strings("metadata_flags").isNotEmpty() }
-        if (flagged.isNotEmpty()) {
-            lines += ""
-            lines += "What the image files say about themselves"
-            for (image in flagged) {
-                for (flag in image.strings("metadata_flags")) {
-                    lines += "  Image ${image.whole("index") ?: 0}: $flag"
-                }
+        if (name == EDITLENS) {
+            lines += "$name — ${detector.text("label") ?: ""}"
+        } else {
+            val flagged = scored.filter { it.score!! >= 0.5 }
+            lines += "$name flags ${flagged.size} of ${scored.size} files as likely AI-generated"
+        }
+        histogram(files).forEach { lines += it }
+
+        if (name != EDITLENS) {
+            val flagged = scored.filter { it.score!! >= 0.5 }.sortedByDescending { it.score }
+            if (flagged.isNotEmpty()) {
+                lines += "  files it flags:"
+                flagged.forEach { lines += "    ${percent(it.score!!)}  ${File(it.name).name}" }
             }
         }
+        if (verbose) {
+            lines += "  every file, highest first:"
+            scored.sortedByDescending { it.score }
+                .forEach { lines += "    ${percent(it.score!!)}  ${File(it.name).name}" }
+        }
+        lines += "  (aggregate over all text pooled: ${percent(score)} — footnote only)"
+    }
+}
+
+fun renderReport(payload: String, inputs: List<File>, verbose: Boolean) {
+    val report = try {
+        Json.parseToJsonElement(payload).jsonObject
+    } catch (error: Exception) {
+        fail("The worker did not return a readable report: ${error.message}", 1)
+    }
+
+    val detectors = report["text"]?.jsonArray.orEmpty().map { it.jsonObject }
+    val lines = mutableListOf<String>()
+    if (inputs.size == 1) {
+        lines += "Read: ${inputs.single().path}"
+        lines += ""
+        renderSingle(detectors, verbose, lines)
+    } else {
+        lines += "Surveyed ${inputs.size} files, each scored on its own"
+        renderSurvey(detectors, inputs.size, verbose, lines)
     }
 
     val notes = report["warnings"]?.jsonArray.orEmpty().mapNotNull { it.jsonPrimitive.contentOrNull }

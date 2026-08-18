@@ -1,26 +1,22 @@
-"""Readable text from every input kind the tool accepts."""
+"""Readable prose from every input kind the tool accepts."""
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-
-from .webarchive import EmbeddedImage, parse_webarchive
 
 
 MARKDOWN_SUFFIXES = {".md", ".markdown", ".mdown", ".mkd"}
-WEBARCHIVE_SUFFIXES = {".webarchive"}
-SUPPORTED_SUFFIXES = MARKDOWN_SUFFIXES | WEBARCHIVE_SUFFIXES
+SUPPORTED_SUFFIXES = MARKDOWN_SUFFIXES
 
 
 @dataclass(frozen=True)
 class Source:
-    """One file's readable prose, plus any images it actually embeds."""
+    """One file's readable prose."""
 
     name: str
     text: str
-    images: list[EmbeddedImage] = field(default_factory=list)
 
 
 # Fenced code, front matter, and link targets are not prose. Scoring them would
@@ -78,27 +74,18 @@ def markdown_to_prose(markdown: str) -> str:
 
 
 def load_source(path: Path, display: str | None = None) -> Source:
-    """Read one file, choosing the reader its suffix calls for."""
+    """Read one Markdown file into readable prose."""
     name = display or str(path)
-    suffix = path.suffix.lower()
-
-    if suffix in WEBARCHIVE_SUFFIXES:
-        content = parse_webarchive(path)
-        return Source(name=name, text=content.text, images=content.images)
-
-    if suffix in MARKDOWN_SUFFIXES:
-        try:
-            raw = path.read_text(encoding="utf-8", errors="replace")
-        except OSError as error:
-            raise ValueError(f"Invalid markdown: {name}: {error}") from error
-        # Markdown references images rather than embedding them, so there are
-        # no image bytes in the document to evaluate.
-        return Source(name=name, text=markdown_to_prose(raw), images=[])
-
-    raise ValueError(
-        f"Unsupported file type: {name} "
-        f"(expected {', '.join(sorted(SUPPORTED_SUFFIXES))})"
-    )
+    if path.suffix.lower() not in MARKDOWN_SUFFIXES:
+        raise ValueError(
+            f"Unsupported file type: {name} "
+            f"(expected {', '.join(sorted(SUPPORTED_SUFFIXES))})"
+        )
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as error:
+        raise ValueError(f"Invalid markdown: {name}: {error}") from error
+    return Source(name=name, text=markdown_to_prose(raw))
 
 
 def load_sources(paths: list[Path]) -> list[Source]:

@@ -6,17 +6,16 @@ import re
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
-from .contracts import DetectorResult, ImageResult
-from .metadata import inspect_image_metadata
-from .webarchive import EmbeddedImage
+from .contracts import DetectorResult, FileScore
+from .sources import Source
 
 
 MAX_CHUNK_CHARACTERS = 6000
 
 
-# Both text detectors and Organika document a 0.5 decision threshold. The
-# wording says how strongly a detector leans, in plain language, because the
-# percentage behind it means nothing to most readers.
+# Both text detectors document a 0.5 decision threshold. The wording says how
+# strongly a detector leans, in plain language, because the percentage behind it
+# means nothing to most readers.
 AI_VERDICT_THRESHOLD = 0.60
 HUMAN_VERDICT_THRESHOLD = 0.40
 UNDECIDED_VERDICT = "unclear — could be either"
@@ -90,7 +89,6 @@ EDITLENS_NAME = "EditLens"
 EDITLENS_BASE = "meta-llama/Llama-3.2-3B"
 EDITLENS_ADAPTER = "pangram/editlens_Llama-3.2-3B"
 EDITLENS_LABEL = "estimated AI-edit extent"
-IMAGE_MODEL = "Organika/sdxl-detector"
 
 NO_TEXT_DETAIL = "no readable text"
 
@@ -103,7 +101,7 @@ class Chunk:
     text: str
 
 
-def chunk_sources(sources: list) -> list[Chunk]:
+def chunk_sources(sources: list[Source]) -> list[Chunk]:
     """Pool every file into one partition, without spanning file boundaries.
 
     Chunks never straddle two files, so a collective score is the mean over
@@ -295,9 +293,6 @@ class ModelLoader(Protocol):
     ) -> Callable[[str], list[float]]:
         """Return a predictor mapping a chunk to EditLens bucket logits."""
 
-    def load_image(self, model_id: str, device: str) -> Callable[[bytes], float]:
-        """Return a predictor mapping image bytes to an `artificial` probability."""
-
 
 def run_text_detectors(
     chunks: list[Chunk], loader: ModelLoader, device: str, verbose: bool = False
@@ -305,8 +300,9 @@ def run_text_detectors(
     """Run every text detector sequentially, keeping their meanings distinct.
 
     Every detector scores the same chunks, so their per-chunk scores are
-    directly comparable. A detector that cannot run is reported with no score
-    and the reason, so the detectors that did run stay available.
+    directly comparable and can be grouped back into per-file scores. A detector
+    that cannot run is reported with no score and the reason, so the detectors
+    that did run stay available.
     """
     if not chunks:
         return [
@@ -314,16 +310,15 @@ def run_text_detectors(
             for model in TEXT_MODELS
         ] + [DetectorResult(EDITLENS_NAME, 0.0, NOT_ASSESSED_LABEL, NO_TEXT_DETAIL)]
 
-    passages = [chunk.text for chunk in chunks]
     results: list[DetectorResult] = []
     for model in TEXT_MODELS:
-        results.append(_score_text_model(passages, model, loader, device, verbose))
-    results.append(_score_editlens(passages, loader, device, verbose))
+        results.append(_score_text_model(chunks, model, loader, device, verbose))
+    results.append(_score_editlens(chunks, loader, device, verbose))
     return results
 
 
 def _score_text_model(
-    chunks: list[str],
+    chunks: list[Chunk],
     model: TextModel,
     loader: ModelLoader,
     device: str,
@@ -332,7 +327,7 @@ def _score_text_model(
     predictor = None
     try:
         predictor = loader.load_text(model, device)
-        predictions = [predictor(chunk) for chunk in chunks]
+        scores = [float(predictor(chunk.text)["ai"]) for chunk in chunks]
     except Exception as error:  # noqa: BLE001 - one detector must not stop the rest
         return DetectorResult(
             model.name, None, NOT_ASSESSED_LABEL, _unavailable(error, verbose)
@@ -340,20 +335,24 @@ def _score_text_model(
     finally:
         _release(loader, predictor)
 
-    scores = [float(prediction["ai"]) for prediction in predictions]
-    score = mean_score(scores)
+    overall = mean_score(scores)
     return DetectorResult(
-        model.name, score, verdict(score), _detail(chunks, scores, verbose), scores
+        model.name,
+        overall,
+        verdict(overall),
+        _detail(chunks, scores, verbose),
+        scores,
+        _group_by_file(chunks, scores),
     )
 
 
 def _score_editlens(
-    chunks: list[str], loader: ModelLoader, device: str, verbose: bool
+    chunks: list[Chunk], loader: ModelLoader, device: str, verbose: bool
 ) -> DetectorResult:
     predictor = None
     try:
         predictor = loader.load_editlens(EDITLENS_BASE, EDITLENS_ADAPTER, device)
-        scores = [editlens_score(list(predictor(chunk))) for chunk in chunks]
+        scores = [editlens_score(list(predictor(chunk.text))) for chunk in chunks]
     except Exception as error:  # noqa: BLE001 - one detector must not stop the rest
         return DetectorResult(
             EDITLENS_NAME, None, NOT_ASSESSED_LABEL, _unavailable(error, verbose)
@@ -361,17 +360,33 @@ def _score_editlens(
     finally:
         _release(loader, predictor)
 
-    score = mean_score(scores)
+    overall = mean_score(scores)
     return DetectorResult(
         EDITLENS_NAME,
-        score,
-        describe_edit_extent(score),
+        overall,
+        describe_edit_extent(overall),
         _detail(chunks, scores, verbose),
         scores,
+        _group_by_file(chunks, scores),
     )
 
 
-def _detail(chunks: list[str], scores: list[float], verbose: bool) -> str:
+def _group_by_file(chunks: list[Chunk], scores: list[float]) -> list[FileScore]:
+    """Collapse chunk scores into one mean per file, order preserved."""
+    order: list[str] = []
+    grouped: dict[str, list[float]] = {}
+    for chunk, score in zip(chunks, scores):
+        if chunk.source not in grouped:
+            grouped[chunk.source] = []
+            order.append(chunk.source)
+        grouped[chunk.source].append(score)
+    return [
+        FileScore(name=name, score=mean_score(grouped[name]), chunks=len(grouped[name]))
+        for name in order
+    ]
+
+
+def _detail(chunks: list[Chunk], scores: list[float], verbose: bool) -> str:
     """Chunk count, plus the spread behind the mean when asked for it."""
     detail = _chunk_detail(chunks)
     if not verbose or not scores:
@@ -390,57 +405,8 @@ def _detail(chunks: list[str], scores: list[float], verbose: bool) -> str:
     )
 
 
-def run_image_detector(
-    images: list[EmbeddedImage], loader: ModelLoader, device: str
-) -> list[ImageResult]:
-    """Score embedded images independently of any text result.
-
-    A single unreadable image is skipped and reported rather than failing the
-    run, and metadata heuristics stay separate from the model prediction.
-    """
-    if not images:
-        return []
-
-    try:
-        predictor = loader.load_image(IMAGE_MODEL, device)
-    except Exception as error:  # noqa: BLE001 - text results must stay available
-        reason = _skip_reason(error)
-        return [
-            ImageResult(
-                image.index, None, None, inspect_image_metadata(image.data), reason
-            )
-            for image in images
-        ]
-
-    results: list[ImageResult] = []
-    for image in images:
-        flags = inspect_image_metadata(image.data)
-        try:
-            score = float(predictor(image.data))
-        except Exception as error:  # noqa: BLE001 - one bad image must not stop the run
-            results.append(
-                ImageResult(image.index, None, None, flags, _skip_reason(error))
-            )
-            continue
-        results.append(
-            ImageResult(
-                image.index,
-                score,
-                verdict(score, "AI-generated", "human-made"),
-                flags,
-                None,
-            )
-        )
-    _release(loader, predictor)
-    return results
-
-
-def _chunk_detail(chunks: list[str]) -> str:
+def _chunk_detail(chunks: list[Chunk]) -> str:
     return f"{len(chunks)} chunk" if len(chunks) == 1 else f"{len(chunks)} chunks"
-
-
-def _skip_reason(error: Exception) -> str:
-    return f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
 
 
 def _unavailable(error: Exception, verbose: bool = True) -> str:
@@ -636,35 +602,6 @@ class TransformersLoader:
             f"{adapter_id}: no classification head found in the adapter, so its "
             "edit-extent buckets cannot be counted"
         )
-
-    def load_image(self, model_id: str, device: str) -> Callable[[bytes], float]:
-        from io import BytesIO
-
-        from PIL import Image
-        from transformers import AutoImageProcessor, AutoModelForImageClassification
-
-        # Organika saved a slow processor; asking for it explicitly keeps the
-        # preprocessing the model was trained with, and stays quiet about it.
-        processor = self._download(AutoImageProcessor, model_id, use_fast=False)
-        model = self._download(AutoModelForImageClassification, model_id)
-        model.eval().to(device)
-        ai_index = resolve_ai_label_index(model.config.id2label, model_id)
-
-        def predict(data: bytes) -> float:
-            with Image.open(BytesIO(data)) as image:
-                # PIL always hands back channels-last pixels; saying so keeps the
-                # processor from guessing wrong on very small images.
-                pixels = processor(
-                    images=image.convert("RGB"),
-                    return_tensors="pt",
-                    input_data_format="channels_last",
-                )
-            pixels = pixels.to(device)
-            with self.torch.inference_mode():
-                logits = model(**pixels).logits[0]
-            return self.torch.softmax(logits.float(), dim=-1)[ai_index].item()
-
-        return predict
 
     def release(self) -> None:
         """Free accelerator memory held by the model that just finished."""

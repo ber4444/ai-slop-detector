@@ -1,12 +1,7 @@
-from pathlib import Path
-
 import pytest
 
 from slop_detector.models import chunk_sources
 from slop_detector.sources import Source, load_source, load_sources, markdown_to_prose
-
-
-FIXTURES = Path(__file__).parents[1] / "fixtures"
 
 
 def test_markdown_keeps_prose_and_drops_the_toolchain():
@@ -63,26 +58,18 @@ def test_markdown_survives_an_unclosed_code_fence():
     assert "never closed" not in prose
 
 
-def test_load_source_reads_markdown_and_reports_no_embedded_images(tmp_path):
+def test_load_source_reads_markdown(tmp_path):
     path = tmp_path / "note.md"
     path.write_text("# Title\n\nA paragraph.\n")
 
     source = load_source(path)
 
     assert source.text == "Title\n\nA paragraph."
-    assert source.images == []
-
-
-def test_load_source_still_reads_webarchives():
-    source = load_source(FIXTURES / "article-with-image.webarchive")
-
-    assert source.text == "Headline\nFirst paragraph.\nSecond paragraph."
-    assert len(source.images) == 1
 
 
 def test_load_source_names_the_unsupported_type(tmp_path):
-    path = tmp_path / "page.html"
-    path.write_text("<html></html>")
+    path = tmp_path / "page.webarchive"
+    path.write_bytes(b"not markdown anymore")
 
     with pytest.raises(ValueError, match="Unsupported file type"):
         load_source(path)

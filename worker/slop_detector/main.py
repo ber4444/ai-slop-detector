@@ -12,13 +12,10 @@ from .models import (
     TransformersLoader,
     chunk_sources,
     compare_detectors,
-    mean_score,
-    run_image_detector,
     run_text_detectors,
     select_runtime_device,
 )
 from .sources import load_sources
-from .webarchive import EmbeddedImage
 
 
 TOKEN_RELATIVE_PATH = Path(".secrets/huggingface.token")
@@ -41,15 +38,7 @@ VERBOSE_NOTES = (
     "AI-generated, 90% or more almost certainly so.",
     "EditLens estimates how much of the text was AI-edited. That is a "
     "different quantity from the others' probability that it was AI-written.",
-    "Every detector scores the same chunks; each percentage is the mean over "
-    "them, and the per-chunk spread is shown beside it.",
-)
-
-IMAGE_NOTES = (
-    "The image detector was trained to spot one family of AI image generators. "
-    "A low score does not mean an image is real.",
-    "Metadata findings come from the file's own labelling, not from looking at "
-    "the picture. Most images carry none, and that means nothing either way.",
+    "A file is counted as flagged when its own mean score is 0.50 or higher.",
 )
 
 
@@ -81,7 +70,6 @@ def build_report(request: RunRequest) -> RunReport:
     """Read every input and run the requested detectors sequentially."""
     sources = load_sources([Path(path) for path in request.paths])
     chunks = chunk_sources(sources)
-    images = _collect_images(sources)
     device, warnings = select_runtime_device()
     token = read_hf_token()
 
@@ -93,66 +81,36 @@ def build_report(request: RunRequest) -> RunReport:
             "No text detector could run:\n"
             + "\n".join(f"{result.name}: {result.detail}" for result in text)
         )
-    image_results = (
-        run_image_detector(images, TransformersLoader(token), device)
-        if request.include_images
-        else []
-    )
 
     notes = list(warnings)
-    notes.extend(_unavailable_notes(text, image_results))
-    notes.extend(_scope_notes(sources, chunks))
+    notes.extend(_unavailable_notes(text))
+    notes.extend(_survey_notes(sources, text))
     notes.extend(_agreement_notes(text, request.verbose))
     notes.extend(ADVISORY_NOTES)
-    if request.include_images:
-        notes.extend(IMAGE_NOTES)
     if request.verbose:
         notes.extend(VERBOSE_NOTES)
-        notes.extend(_per_file_notes(chunks, text))
-        notes.extend(_verbose_notes(sources, images, device, request))
-    return RunReport(text=text, images=image_results, warnings=notes)
+        notes.extend(_verbose_notes(sources, device))
+    return RunReport(text=text, warnings=notes)
 
 
-def _collect_images(sources: list) -> list[EmbeddedImage]:
-    """Number every embedded image across all inputs in one sequence."""
-    images = []
-    for source in sources:
-        for image in source.images:
-            images.append(EmbeddedImage(len(images), image.mime_type, image.data))
-    return images
-
-
-def _scope_notes(sources: list, chunks: list) -> list[str]:
-    """Say what a collective score was taken over, when there is more than one file."""
+def _survey_notes(sources: list, text: list) -> list[str]:
+    """State how many files each detector flags, when there is more than one."""
     if len(sources) < 2:
         return []
-    return [
-        f"This is one collective answer for {len(sources)} files, pooled over "
-        f"{len(chunks)} sections of text. A single badly written file can move "
-        f"it; --verbose breaks the answer down per file."
-    ]
-
-
-def _per_file_notes(chunks: list, text: list) -> list[str]:
-    """Break a collective score back down into the files behind it."""
-    names = list(dict.fromkeys(chunk.source for chunk in chunks))
-    if len(names) < 2:
-        return []
-
     notes = []
     for result in text:
-        if not result.chunk_scores:
+        if result.name == EDITLENS_NAME or not result.file_scores:
             continue
-        parts = []
-        for name in names:
-            scores = [
-                score
-                for chunk, score in zip(chunks, result.chunk_scores)
-                if chunk.source == name
-            ]
-            if scores:
-                parts.append(f"{Path(name).name} {mean_score(scores) * 100:.0f}%")
-        notes.append(f"{result.name} per file: " + ", ".join(parts))
+        scored = [f for f in result.file_scores if f.score is not None]
+        flagged = sum(1 for f in scored if f.score >= 0.5)
+        if not scored:
+            continue
+        rate = flagged / len(scored) * 100
+        notes.append(
+            f"{result.name} flags {flagged} of {len(scored)} files as "
+            f"AI-generated ({rate:.1f}%). If these files are all human-written, "
+            f"that is its false-positive rate on this kind of writing."
+        )
     return notes
 
 
@@ -186,10 +144,9 @@ def _plain_agreement_sentence(first, second, comparison) -> str:
     disagreed = comparison.chunks - comparison.agreed
     if (first.score >= 0.5) != (second.score >= 0.5):
         return (
-            f"{first.name} and {second.name} flatly contradict each other about "
-            "this page: one reads it as AI-generated and the other as human. "
-            "When they disagree this sharply, neither reading is trustworthy "
-            "here. Treat the page as unresolved."
+            f"{first.name} and {second.name} flatly contradict each other "
+            "overall: one leans AI-generated and the other human. When they "
+            "disagree this sharply, treat the result as unresolved."
         )
     if disagreed > comparison.chunks / 3:
         return (
@@ -219,11 +176,9 @@ def _agreement_sentence(first, second, comparison) -> str:
     return f"{head} (Cohen's kappa {comparison.kappa:+.2f})."
 
 
-def _unavailable_notes(text: list, images: list) -> list[str]:
-    """Say plainly that this is a partial report, and which detectors are missing."""
+def _unavailable_notes(text: list) -> list[str]:
+    """Say plainly that a detector could not run, and which one."""
     missing = [result.name for result in text if result.score is None]
-    if images and all(image.skipped_reason for image in images):
-        missing.append("the image detector")
     if not missing:
         return []
     return [
@@ -233,36 +188,27 @@ def _unavailable_notes(text: list, images: list) -> list[str]:
     ]
 
 
-def _verbose_notes(
-    sources: list, images: list, device: str, request: RunRequest
-) -> list[str]:
+def _verbose_notes(sources: list, device: str) -> list[str]:
     """Report extraction counts without echoing any input content."""
-    embedded = len(images)
     characters = sum(len(source.text) for source in sources)
-    notes = [
+    return [
         f"Device: {device}.",
         f"Read {len(sources)} file(s).",
         f"Extracted {characters} characters of readable text.",
-        f"Found {embedded} embedded raster image(s).",
     ]
-    if embedded and not request.include_images:
-        notes.append("Embedded images were not analyzed; pass --images to include them.")
-    return notes
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="slop_detector.main",
-        description="Analyze .webarchive or Markdown files for likely AI-generated content.",
+        description="Analyze Markdown files for likely AI-generated text.",
     )
     parser.add_argument("--input", required=True, action="append", type=Path)
-    parser.add_argument("--images", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
 
     request = RunRequest(
         paths=[str(path) for path in args.input],
-        include_images=args.images,
         verbose=args.verbose,
     )
     try:
