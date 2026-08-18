@@ -184,3 +184,54 @@ def test_a_complete_run_says_nothing_about_partial_results(
 
     warnings = json.loads(capsys.readouterr().out)["warnings"]
     assert not any("partial report" in note for note in warnings)
+
+
+def test_agreement_between_detectors_is_reported_as_kappa(
+    stub_worker, capsys, tmp_path
+):
+    stub_worker.setattr(
+        "slop_detector.main.run_text_detectors",
+        lambda *args: [
+            DetectorResult("Glyph", 0.5, "x", "4 chunks", [0.9, 0.9, 0.1, 0.1]),
+            DetectorResult("Vanguard", 0.5, "x", "4 chunks", [0.1, 0.1, 0.9, 0.9]),
+        ],
+    )
+
+    main(["--archive", str(tmp_path / "page.webarchive")])
+
+    warnings = json.loads(capsys.readouterr().out)["warnings"]
+    agreement = next(note for note in warnings if "kappa" in note)
+    assert "Glyph and Vanguard" in agreement
+    assert "-1.00" in agreement
+    assert "contradict" in agreement
+    assert "4 shared chunks" in agreement
+
+
+def test_editlens_is_left_out_of_the_agreement_statistic(stub_worker, capsys, tmp_path):
+    stub_worker.setattr(
+        "slop_detector.main.run_text_detectors",
+        lambda *args: [
+            DetectorResult("Glyph", 0.5, "x", "2 chunks", [0.9, 0.1]),
+            DetectorResult("EditLens", 0.5, "y", "2 chunks", [0.9, 0.1]),
+        ],
+    )
+
+    main(["--archive", str(tmp_path / "page.webarchive")])
+
+    warnings = json.loads(capsys.readouterr().out)["warnings"]
+    assert not any("kappa" in note for note in warnings)
+
+
+def test_no_agreement_note_when_only_one_detector_scored(stub_worker, capsys, tmp_path):
+    stub_worker.setattr(
+        "slop_detector.main.run_text_detectors",
+        lambda *args: [
+            DetectorResult("Glyph", 0.5, "x", "2 chunks", [0.9, 0.1]),
+            DetectorResult("Vanguard", None, "not assessed", "gated"),
+        ],
+    )
+
+    main(["--archive", str(tmp_path / "page.webarchive")])
+
+    warnings = json.loads(capsys.readouterr().out)["warnings"]
+    assert not any("kappa" in note for note in warnings)

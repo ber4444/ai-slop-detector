@@ -6,6 +6,7 @@ from slop_detector.models import (
     mean_score,
     run_image_detector,
     ai_probability,
+    cohens_kappa,
     verdict,
     resolve_ai_label_index,
     run_text_detectors,
@@ -58,18 +59,19 @@ class FakeLoader:
 
     def __init__(self, image_score=0.9, image_error=None):
         self.loaded = []
-        self.chunk_limits = []
+        self.chunks_seen = {}
         self.image_score = image_score
         self.image_error = image_error
 
     def load_text(self, model, device):
         self.loaded.append(model.model_id)
-        self.chunk_limits.append(model.max_characters)
-        return lambda chunk: {"ai": 0.8}
+        seen = self.chunks_seen.setdefault(model.name, [])
+        return lambda chunk: (seen.append(chunk), {"ai": 0.8})[1]
 
     def load_editlens(self, base_id, adapter_id, device):
         self.loaded.append(adapter_id)
-        return lambda chunk: [0.0, 0.0, 0.0]
+        seen = self.chunks_seen.setdefault("EditLens", [])
+        return lambda chunk: (seen.append(chunk), [0.0, 0.0, 0.0])[1]
 
     def load_image(self, model_id, device):
         self.loaded.append(model_id)
@@ -186,15 +188,18 @@ def test_glyph_is_pinned_to_its_documented_label_window_and_tokenizer():
     assert glyph.max_characters <= 2048
 
 
-def test_each_detector_is_chunked_to_its_own_token_window():
+def test_every_detector_scores_one_shared_partition():
     loader = FakeLoader()
     text = "Sentence number one. " * 400
 
     results = run_text_detectors(text, loader, "cpu")
 
-    assert loader.chunk_limits == [1600, 6000]
-    glyph, vanguard = results[0], results[1]
-    assert int(glyph.detail.split()[0]) > int(vanguard.detail.split()[0])
+    partitions = list(loader.chunks_seen.values())
+    assert len(partitions) == 3
+    assert all(partition == partitions[0] for partition in partitions)
+    assert len(partitions[0]) > 1
+    counts = {int(result.detail.split()[0]) for result in results}
+    assert len(counts) == 1, "every detector must score the same partition"
 
 
 class BrokenLoader(FakeLoader):
@@ -261,7 +266,7 @@ def test_an_unloadable_image_model_skips_images_but_keeps_their_metadata(png_byt
     assert results[0].metadata_flags == ["Software: Stable Diffusion"]
 
 
-def test_verbose_adds_the_raw_labels_the_model_emitted():
+def test_verbose_exposes_the_spread_the_mean_hides():
     class LabellingLoader(FakeLoader):
         def load_text(self, model, device):
             super().load_text(model, device)
@@ -271,7 +276,8 @@ def test_verbose_adds_the_raw_labels_the_model_emitted():
     loud = run_text_detectors("A sentence.", LabellingLoader(), "cpu", verbose=True)
 
     assert quiet[0].detail == "1 chunk"
-    assert loud[0].detail == "1 chunk; raw labels LABEL_1x1"
+    assert "per-chunk 0.80-0.80" in loud[0].detail
+    assert "1/1 over 0.50" in loud[0].detail
 
 
 def test_verdict_states_the_plain_reading_on_each_side_of_the_threshold():
@@ -303,3 +309,35 @@ def test_a_scored_detector_is_labelled_with_its_verdict_not_a_fixed_string():
 
     assert results[0].label == "likely human"
     assert results[1].label == "likely human"
+
+
+def test_detectors_carry_their_per_chunk_scores_for_comparison():
+    results = run_text_detectors("One. Two. Three.", FakeLoader(), "cpu")
+
+    assert results[0].chunk_scores == [0.8]
+    assert results[1].chunk_scores == [0.8]
+    assert results[2].chunk_scores == [0.5]
+
+
+def test_an_unavailable_detector_carries_no_chunk_scores():
+    results = run_text_detectors("A sentence.", BrokenLoader("EditLens"), "cpu")
+
+    assert results[2].chunk_scores == []
+
+
+def test_kappa_separates_agreement_from_chance_and_from_contradiction():
+    agree = [0.9, 0.9, 0.1, 0.1]
+    assert cohens_kappa(agree, [0.8, 0.7, 0.2, 0.3]) == 1.0
+    assert cohens_kappa(agree, [0.1, 0.1, 0.9, 0.9]) == -1.0
+
+
+def test_kappa_is_unavailable_when_the_chunks_are_not_shared():
+    assert cohens_kappa([0.9, 0.1], [0.9]) is None
+    assert cohens_kappa([0.9], [0.1]) is None
+
+
+def test_kappa_of_a_detector_that_never_changes_its_mind_is_not_inflated():
+    # Both call every chunk AI: they never disagree, but nothing is learned.
+    assert cohens_kappa([0.9, 0.9, 0.9], [0.8, 0.8, 0.8]) == 1.0
+    # One always says AI, the other is split: agreement is pure chance.
+    assert cohens_kappa([0.9, 0.9, 0.9, 0.9], [0.9, 0.9, 0.1, 0.1]) == 0.0

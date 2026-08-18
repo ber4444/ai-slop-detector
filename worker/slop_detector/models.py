@@ -68,10 +68,19 @@ EDITLENS_NAME = "EditLens"
 EDITLENS_BASE = "meta-llama/Llama-3.2-3B"
 EDITLENS_ADAPTER = "pangram/editlens_Llama-3.2-3B"
 EDITLENS_LABEL = "estimated AI-edit extent"
-EDITLENS_MAX_CHARACTERS = MAX_CHUNK_CHARACTERS
 IMAGE_MODEL = "Organika/sdxl-detector"
 
 NO_TEXT_DETAIL = "no readable text"
+
+
+def shared_chunk_characters() -> int:
+    """One partition for every detector, sized for the narrowest token window.
+
+    Scoring each model over its own chunking made the per-model scores means of
+    different things and left them impossible to compare chunk by chunk.
+    """
+    return min(model.max_characters for model in TEXT_MODELS)
+
 
 # Sentence endings and blank-line/paragraph breaks are the natural boundaries a
 # chunk may be cut at before falling back to word and character splits.
@@ -168,6 +177,33 @@ def editlens_score(logits: list[float]) -> float:
     return expected / (len(probabilities) - 1)
 
 
+DECISION_THRESHOLD = 0.5
+
+
+def cohens_kappa(first: list[float], second: list[float]) -> float | None:
+    """Chance-corrected agreement between two detectors over the same chunks.
+
+    Returns None when the two did not score the same chunks, or when there are
+    too few to say anything. 1.0 is total agreement, 0.0 is chance, and a
+    negative value means the two disagree more often than chance would.
+    """
+    if len(first) != len(second) or len(first) < 2:
+        return None
+
+    left = [score >= DECISION_THRESHOLD for score in first]
+    right = [score >= DECISION_THRESHOLD for score in second]
+    total = len(left)
+    observed = sum(1 for a, b in zip(left, right) if a == b) / total
+    expected = sum(
+        (sum(1 for a in left if a is value) / total)
+        * (sum(1 for b in right if b is value) / total)
+        for value in (True, False)
+    )
+    if expected >= 1.0:
+        return 1.0 if observed >= 1.0 else 0.0
+    return (observed - expected) / (1.0 - expected)
+
+
 def mean_score(scores: list[float]) -> float:
     """Average chunk-level scores; no chunks means there is nothing to report."""
     if not scores:
@@ -195,12 +231,12 @@ def run_text_detectors(
 ) -> list[DetectorResult]:
     """Run every text detector sequentially, keeping their meanings distinct.
 
-    Each model is chunked to its own token window, so the chunk count can
-    legitimately differ between detectors. A detector that cannot run is
-    reported with no score and the reason, so the detectors that did run stay
-    available.
+    Every detector scores the same chunks, so their per-chunk scores are
+    directly comparable. A detector that cannot run is reported with no score
+    and the reason, so the detectors that did run stay available.
     """
-    if not chunk_text(text, MAX_CHUNK_CHARACTERS):
+    chunks = chunk_text(text, shared_chunk_characters())
+    if not chunks:
         return [
             DetectorResult(model.name, 0.0, NOT_ASSESSED_LABEL, NO_TEXT_DETAIL)
             for model in TEXT_MODELS
@@ -208,17 +244,18 @@ def run_text_detectors(
 
     results: list[DetectorResult] = []
     for model in TEXT_MODELS:
-        results.append(
-            _score_text_model(text, model, loader, device, verbose)
-        )
-    results.append(_score_editlens(text, loader, device))
+        results.append(_score_text_model(chunks, model, loader, device, verbose))
+    results.append(_score_editlens(chunks, loader, device, verbose))
     return results
 
 
 def _score_text_model(
-    text: str, model: TextModel, loader: ModelLoader, device: str, verbose: bool
+    chunks: list[str],
+    model: TextModel,
+    loader: ModelLoader,
+    device: str,
+    verbose: bool,
 ) -> DetectorResult:
-    chunks = chunk_text(text, model.max_characters)
     predictor = None
     try:
         predictor = loader.load_text(model, device)
@@ -230,15 +267,16 @@ def _score_text_model(
     finally:
         _release(loader, predictor)
 
-    score = mean_score([float(prediction["ai"]) for prediction in predictions])
-    detail = _chunk_detail(chunks)
-    if verbose:
-        detail = "; ".join(filter(None, [detail, _raw_label_detail(predictions)]))
-    return DetectorResult(model.name, score, verdict(score), detail)
+    scores = [float(prediction["ai"]) for prediction in predictions]
+    score = mean_score(scores)
+    return DetectorResult(
+        model.name, score, verdict(score), _detail(chunks, scores, verbose), scores
+    )
 
 
-def _score_editlens(text: str, loader: ModelLoader, device: str) -> DetectorResult:
-    chunks = chunk_text(text, EDITLENS_MAX_CHARACTERS)
+def _score_editlens(
+    chunks: list[str], loader: ModelLoader, device: str, verbose: bool
+) -> DetectorResult:
     predictor = None
     try:
         predictor = loader.load_editlens(EDITLENS_BASE, EDITLENS_ADAPTER, device)
@@ -251,17 +289,31 @@ def _score_editlens(text: str, loader: ModelLoader, device: str) -> DetectorResu
         _release(loader, predictor)
 
     return DetectorResult(
-        EDITLENS_NAME, mean_score(scores), EDITLENS_LABEL, _chunk_detail(chunks)
+        EDITLENS_NAME,
+        mean_score(scores),
+        EDITLENS_LABEL,
+        _detail(chunks, scores, verbose),
+        scores,
     )
 
 
-def _raw_label_detail(predictions: list[dict]) -> str:
-    """Summarize the labels the model itself emitted, for --verbose auditing."""
-    labels = [str(prediction["label"]) for prediction in predictions if prediction.get("label")]
-    if not labels:
-        return ""
-    counted = sorted({label: labels.count(label) for label in labels}.items())
-    return "raw labels " + ", ".join(f"{label}x{count}" for label, count in counted)
+def _detail(chunks: list[str], scores: list[float], verbose: bool) -> str:
+    """Chunk count, plus the spread behind the mean when asked for it."""
+    detail = _chunk_detail(chunks)
+    if not verbose or not scores:
+        return detail
+    ordered = sorted(scores)
+    middle = len(ordered) // 2
+    median = (
+        ordered[middle]
+        if len(ordered) % 2
+        else (ordered[middle - 1] + ordered[middle]) / 2
+    )
+    above = sum(1 for score in scores if score >= 0.5)
+    return (
+        f"{detail}; per-chunk {ordered[0]:.2f}-{ordered[-1]:.2f}, "
+        f"median {median:.2f}, {above}/{len(scores)} over 0.50"
+    )
 
 
 def run_image_detector(
@@ -426,7 +478,7 @@ class TransformersLoader:
             values = logits.float().tolist()
             return {
                 "ai": ai_probability(values, ai_index),
-                "label": _raw_label(values, ai_index, classifier.config),
+                "label": _raw_label(values, classifier.config),
             }
 
         return predict
@@ -562,11 +614,14 @@ def _looks_gated(error: Exception) -> bool:
     )
 
 
-def _raw_label(logits: list[float], ai_index: int | None, config: object) -> str:
-    """The label the model itself would report, shown under --verbose."""
-    if len(logits) == 1:
-        threshold = 0.5
-        return "ai" if ai_probability(logits, ai_index) >= threshold else "human"
+def _raw_label(logits: list[float], config: object) -> str | None:
+    """The label the model itself publishes for its winning output.
+
+    A single-logit head has no label vocabulary, so nothing is reported rather
+    than synthesizing a word from the same assumption the score already uses.
+    """
+    if len(logits) < 2:
+        return None
     winner = max(range(len(logits)), key=lambda index: logits[index])
     return str(getattr(config, "id2label", {}).get(winner, winner))
 

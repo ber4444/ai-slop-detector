@@ -8,7 +8,9 @@ import sys
 
 from .contracts import RunReport, RunRequest
 from .models import (
+    EDITLENS_NAME,
     TransformersLoader,
+    cohens_kappa,
     run_image_detector,
     run_text_detectors,
     select_runtime_device,
@@ -25,8 +27,8 @@ ADVISORY_NOTES = (
     "AI percentage.",
     "EditLens reports an estimated AI-edit extent, not the probability that a "
     "page was written by a model.",
-    "Each text score is the mean of that model's chunk scores; the chunk count "
-    "beside it is that model's own, since each is chunked to its token window.",
+    "Every detector scores the same chunks, and each score is the mean over "
+    "them; --verbose shows the spread the mean hides.",
     "Each verdict follows from that model's own percentage: under 40% reads as "
     "human, 60% or more as AI-generated, and the band between is left "
     "undecided. Human writing rarely scores 0%.",
@@ -86,12 +88,48 @@ def build_report(request: RunRequest) -> RunReport:
 
     notes = list(warnings)
     notes.extend(_unavailable_notes(text, images))
+    notes.extend(_agreement_notes(text))
     if request.verbose:
         notes.extend(_verbose_notes(content, device, request))
     notes.extend(ADVISORY_NOTES)
     if request.include_images:
         notes.extend(IMAGE_NOTES)
     return RunReport(text=text, images=images, warnings=notes)
+
+
+def _agreement_notes(text: list) -> list[str]:
+    """Report whether the probability detectors actually agree, chunk by chunk.
+
+    Two detectors are only comparable because they score the same chunks; a
+    mean alone cannot distinguish "they disagree" from "one is misread".
+    """
+    comparable = [
+        result
+        for result in text
+        if result.name != EDITLENS_NAME and len(result.chunk_scores) >= 2
+    ]
+    notes = []
+    for index, first in enumerate(comparable):
+        for second in comparable[index + 1 :]:
+            kappa = cohens_kappa(first.chunk_scores, second.chunk_scores)
+            if kappa is None:
+                continue
+            notes.append(
+                f"{first.name} and {second.name} agree on "
+                f"{_agreement_words(kappa)} (Cohen's kappa {kappa:+.2f} over "
+                f"{len(first.chunk_scores)} shared chunks)."
+            )
+    return notes
+
+
+def _agreement_words(kappa: float) -> str:
+    if kappa >= 0.8:
+        return "almost every chunk"
+    if kappa >= 0.4:
+        return "most chunks"
+    if kappa > -0.2:
+        return "no more chunks than chance would predict"
+    return "fewer chunks than chance would predict, which means they contradict"
 
 
 def _unavailable_notes(text: list, images: list) -> list[str]:

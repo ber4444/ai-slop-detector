@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import json
 
 
@@ -18,6 +18,9 @@ class DetectorResult:
     score: float | None
     label: str
     detail: str
+    #: Per-chunk scores behind `score`, so the spread stays inspectable and
+    #: detectors can be compared chunk by chunk. Empty when nothing was scored.
+    chunk_scores: list[float] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
