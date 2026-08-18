@@ -25,6 +25,8 @@ ADVISORY_NOTES = (
     "AI percentage.",
     "EditLens reports an estimated AI-edit extent, not the probability that a "
     "page was written by a model.",
+    "Each text score is the mean of that model's chunk scores; the chunk count "
+    "beside it is that model's own, since each is chunked to its token window.",
 )
 
 IMAGE_NOTES = (

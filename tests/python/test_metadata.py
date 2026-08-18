@@ -36,3 +36,18 @@ def test_metadata_reports_every_known_generator_field_sorted():
         "Generator: Midjourney",
         "parameters: steps: 30",
     ]
+
+
+def test_metadata_distinguishes_present_from_absent_across_real_archive_images():
+    from pathlib import Path
+
+    from slop_detector.webarchive import parse_webarchive
+
+    fixture = Path(__file__).parents[1] / "fixtures" / "multiple-images.webarchive"
+    images = parse_webarchive(fixture).images
+
+    assert [inspect_image_metadata(image.data) for image in images] == [
+        ["Software: Stable Diffusion"],
+        [],
+        [],
+    ]
