@@ -211,10 +211,24 @@ kotlin slop-detector.main.kts tests/fixtures/article-with-image.webarchive --ima
 
 ## Licenses and intended use
 
-EditLens is CC BY-NC-SA 4.0 and Organika's SDXL detector is CC BY-NC 3.0, so
-this repository's intended use is personal and non-commercial. Llama 3.2 is
-covered by the Llama 3.2 Community License. Check each model card before using
-any of this for anything else.
+The code here is MIT — see [LICENSE](LICENSE). That covers this repository's
+source only.
+
+It does not cover the models, and it cannot: no weights are stored in or
+distributed by this repository. Each model is downloaded from Hugging Face
+under its own terms, and two of them forbid commercial use outright.
+
+| Model | License |
+| --- | --- |
+| `pangram/editlens_Llama-3.2-3B` | CC BY-NC-SA 4.0 — **non-commercial** |
+| `Organika/sdxl-detector` | CC BY-NC 3.0 — **non-commercial** |
+| `meta-llama/Llama-3.2-3B` | Llama 3.2 Community License |
+| `ShantanuT01/vanguard-ai-text-detector` | MIT |
+| `ogmatrixllm/glyph-v1.1` | see its model card |
+
+So while the code is permissively licensed, running this tool as configured is
+a personal, non-commercial activity. Check each model card before relying on
+any of it for anything else.
 
 ## Non-goals
 

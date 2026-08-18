@@ -1,0 +1,39 @@
+MIT License
+
+Copyright (c) 2026 ber4444
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+This license covers the source code in this repository only.
+
+It does not cover the machine-learning models the tool downloads at runtime.
+No model weights are contained in or distributed by this repository; each is
+fetched from Hugging Face under its own terms, and several of those terms
+prohibit commercial use:
+
+  pangram/editlens_Llama-3.2-3B    CC BY-NC-SA 4.0  (non-commercial)
+  Organika/sdxl-detector           CC BY-NC 3.0     (non-commercial)
+  meta-llama/Llama-3.2-3B          Llama 3.2 Community License
+  ShantanuT01/vanguard-ai-text-detector  MIT
+  ogmatrixllm/glyph-v1.1           see its model card
+
+The MIT grant above therefore does not give you permission to use this tool
+commercially. Check each model card for the terms that apply to your use.
