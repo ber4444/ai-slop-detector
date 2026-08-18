@@ -92,20 +92,23 @@ environment, missing token) or a run in which no detector could produce a score.
 
 One detector failing does not throw away the others. A text model that cannot
 run — a gated repository you have not been granted, a download failure, a model
-error — is printed as `unavailable` with its reason, the remaining detectors
-keep their scores, and a note names the gap:
+error — is printed as `could not run` with its reason, the remaining detectors
+keep their answers, and a note names the gap:
 
 ```text
-Text detectors
-  Glyph: 8.2% — likely human (1 chunk)
-  Vanguard: 3.9% — likely human (1 chunk)
-  EditLens: unavailable
-      pangram/editlens_Llama-3.2-3B: GatedRepoError: 403 Client Error.
-      Accept the access conditions for ... 
+What the text detectors think
+  Glyph: probably AI-generated
+  Vanguard: almost certainly human
+  EditLens: could not run
+      Accept the access conditions for https://huggingface.co/... 
 
 Notes:
-  - This is a partial report: EditLens could not run. The remaining results are unaffected.
+  - Not every detector ran: EditLens could not start. The results shown are
+    unaffected by that.
 ```
+
+Without `--verbose` the failure shows only its actionable last line; with it you
+get the full error including request IDs and URLs.
 
 Such a run still exits `0`, so read the notes rather than the exit code to know
 whether every detector ran. With `--images`, a single malformed image is skipped
@@ -143,11 +146,10 @@ Pass `--verbose` for the numbers behind that wording.
   page was written by a model.
 - **Glyph** and **Vanguard** report their own probability that the text is
   machine-written; they can and will disagree.
-- The verdict beside each percentage comes from that percentage: **below 40% is
-  `likely human`, at or above 60% is `likely AI-generated`**, and the band
-  between them prints `too close to call` rather than pretending 0.51 differs
-  meaningfully from 0.49. Both model cards document a 0.5 decision threshold;
-  the band is this tool declining to commit at the boundary.
+- Both model cards document a 0.5 decision threshold. The wording is
+  deliberately more reluctant than that: it will not say `almost certainly
+  AI-generated` below 90%, and it says `unclear — could be either` between 40%
+  and 60% rather than pretending 0.51 differs meaningfully from 0.49.
 - Neither model reads 0% on human text. Formulaic, heavily edited prose —
   corporate blogs, press releases, academic abstracts — scores higher than
   casual writing while still landing well under the threshold. Glyph's own card
@@ -158,10 +160,13 @@ Pass `--verbose` for the numbers behind that wording.
   same thing and can be compared chunk by chunk. `--verbose` prints the range,
   median, and how many chunks cleared 0.50 — a mean of 0.86 over three chunks
   can hide two saturated chunks and one near-zero.
-- When two probability detectors both run, the report states their chunk-level
-  agreement as Cohen's kappa. This matters: two models disagreeing and one
-  model being misread produce identical-looking means, and only per-chunk
-  agreement separates them. Kappa near 0 means they agree no more than chance.
+- When two probability detectors both run, the report says whether they back
+  each other up — in plain words by default, and as Cohen's kappa over the
+  shared chunks under `--verbose`. This matters: two models disagreeing and one
+  model being misread produce identical-looking averages, and only per-chunk
+  comparison separates them. When one detector calls every chunk the same way,
+  kappa is 0 by construction and the report says so instead of reading meaning
+  into it.
 - **Organika/sdxl-detector** specifically recognizes SDXL-like generated
   imagery. A low score is not a universal "this image is real" determination.
 - **Metadata heuristics** are container heuristics, not detector predictions. A
