@@ -145,3 +145,31 @@ def test_kotlin_cli_prints_usage_without_bootstrapping(tmp_path):
     assert result.returncode == 0
     assert "Usage: kotlin slop-detector.main.kts" in result.stdout
     assert not received.exists()
+
+
+def test_kotlin_cli_renders_an_unavailable_detector_with_its_reason(tmp_path):
+    report = {
+        **REPORT,
+        "text": [
+            REPORT["text"][0],
+            {
+                "name": "EditLens",
+                "score": None,
+                "label": "estimated AI-edit extent",
+                "detail": (
+                    "pangram/editlens_Llama-3.2-3B: GatedRepoError: 403\n"
+                    "Accept the access conditions for both model pages."
+                ),
+            },
+        ],
+        "warnings": ["This is a partial report: EditLens could not run."],
+    }
+
+    result, _ = run_cli(tmp_path, "page.webarchive", report=report)
+
+    assert result.returncode == 0
+    assert "Glyph: 75.0% — likely AI-generated" in result.stdout
+    assert "EditLens: unavailable" in result.stdout
+    assert "GatedRepoError: 403" in result.stdout
+    assert "Accept the access conditions for both model pages." in result.stdout
+    assert "This is a partial report: EditLens could not run." in result.stdout

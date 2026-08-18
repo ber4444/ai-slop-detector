@@ -90,8 +90,15 @@ fun renderReport(payload: String, archive: String) {
         val score = detector.number("score")
         val label = detector.text("label") ?: ""
         val detail = detector.text("detail")
-        val head = if (score == null) "  $name: unavailable" else "  $name: ${percent(score)} — $label"
-        lines += if (detail.isNullOrBlank()) head else "$head ($detail)"
+        if (score == null) {
+            // A detector that could not run explains itself over as many lines
+            // as its error needs, rather than being squeezed into parentheses.
+            lines += "  $name: unavailable"
+            detail?.lines()?.filter { it.isNotBlank() }?.forEach { lines += "      ${it.trim()}" }
+        } else {
+            val head = "  $name: ${percent(score)} — $label"
+            lines += if (detail.isNullOrBlank()) head else "$head ($detail)"
+        }
     }
 
     val images = report["images"]?.jsonArray.orEmpty().map { it.jsonObject }

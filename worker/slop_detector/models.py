@@ -176,12 +176,14 @@ class ModelLoader(Protocol):
 
 
 def run_text_detectors(
-    text: str, loader: ModelLoader, device: str
+    text: str, loader: ModelLoader, device: str, verbose: bool = False
 ) -> list[DetectorResult]:
     """Run every text detector sequentially, keeping their meanings distinct.
 
     Each model is chunked to its own token window, so the chunk count can
-    legitimately differ between detectors.
+    legitimately differ between detectors. A detector that cannot run is
+    reported with no score and the reason, so the detectors that did run stay
+    available.
     """
     if not chunk_text(text, MAX_CHUNK_CHARACTERS):
         return [
@@ -191,26 +193,56 @@ def run_text_detectors(
 
     results: list[DetectorResult] = []
     for model in TEXT_MODELS:
-        chunks = chunk_text(text, model.max_characters)
-        predictor = loader.load_text(model, device)
-        scores = [float(predictor(chunk)["ai"]) for chunk in chunks]
         results.append(
-            DetectorResult(
-                model.name, mean_score(scores), model.label, _chunk_detail(chunks)
-            )
+            _score_text_model(text, model, loader, device, verbose)
         )
+    results.append(_score_editlens(text, loader, device))
+    return results
+
+
+def _score_text_model(
+    text: str, model: TextModel, loader: ModelLoader, device: str, verbose: bool
+) -> DetectorResult:
+    chunks = chunk_text(text, model.max_characters)
+    predictor = None
+    try:
+        predictor = loader.load_text(model, device)
+        predictions = [predictor(chunk) for chunk in chunks]
+    except Exception as error:  # noqa: BLE001 - one detector must not stop the rest
+        return DetectorResult(model.name, None, model.label, _unavailable(error))
+    finally:
         _release(loader, predictor)
 
+    scores = [float(prediction["ai"]) for prediction in predictions]
+    detail = _chunk_detail(chunks)
+    if verbose:
+        detail = "; ".join(filter(None, [detail, _raw_label_detail(predictions)]))
+    return DetectorResult(model.name, mean_score(scores), model.label, detail)
+
+
+def _score_editlens(text: str, loader: ModelLoader, device: str) -> DetectorResult:
     chunks = chunk_text(text, EDITLENS_MAX_CHARACTERS)
-    predictor = loader.load_editlens(EDITLENS_BASE, EDITLENS_ADAPTER, device)
-    scores = [editlens_score(list(predictor(chunk))) for chunk in chunks]
-    results.append(
-        DetectorResult(
-            EDITLENS_NAME, mean_score(scores), EDITLENS_LABEL, _chunk_detail(chunks)
-        )
+    predictor = None
+    try:
+        predictor = loader.load_editlens(EDITLENS_BASE, EDITLENS_ADAPTER, device)
+        scores = [editlens_score(list(predictor(chunk))) for chunk in chunks]
+    except Exception as error:  # noqa: BLE001 - one detector must not stop the rest
+        return DetectorResult(EDITLENS_NAME, None, EDITLENS_LABEL, _unavailable(error))
+    finally:
+        _release(loader, predictor)
+
+    return DetectorResult(
+        EDITLENS_NAME, mean_score(scores), EDITLENS_LABEL, _chunk_detail(chunks)
     )
-    _release(loader, predictor)
-    return results
+
+
+def _raw_label_detail(predictions: list[dict]) -> str:
+    """Summarize the labels the model itself emitted, for --verbose auditing."""
+    labels = [str(prediction["label"]) for prediction in predictions if prediction.get("label")]
+    if not labels:
+        return ""
+    counted = sorted({label: labels.count(label) for label in labels}.items())
+    return "raw labels " + ", ".join(f"{label}x{count}" for label, count in counted)
 
 
 def run_image_detector(
@@ -224,7 +256,17 @@ def run_image_detector(
     if not images:
         return []
 
-    predictor = loader.load_image(IMAGE_MODEL, device)
+    try:
+        predictor = loader.load_image(IMAGE_MODEL, device)
+    except Exception as error:  # noqa: BLE001 - text results must stay available
+        reason = _skip_reason(error)
+        return [
+            ImageResult(
+                image.index, None, None, inspect_image_metadata(image.data), reason
+            )
+            for image in images
+        ]
+
     results: list[ImageResult] = []
     for image in images:
         flags = inspect_image_metadata(image.data)
@@ -249,8 +291,17 @@ def _skip_reason(error: Exception) -> str:
     return f"{type(error).__name__}: {error}" if str(error) else type(error).__name__
 
 
+def _unavailable(error: Exception) -> str:
+    """Explain why a detector could not run, keeping any guidance the error carries."""
+    if isinstance(error, RuntimeError) and str(error).strip():
+        return str(error).strip()
+    return _skip_reason(error)
+
+
 def _release(loader: ModelLoader, predictor: object) -> None:
     """Drop the predictor and let the loader free any accelerator memory."""
+    if predictor is None:
+        return
     del predictor
     release = getattr(loader, "release", None)
     if callable(release):
@@ -352,7 +403,11 @@ class TransformersLoader:
             ).to(device)
             with self.torch.inference_mode():
                 logits = classifier(**inputs).logits[0]
-            return {"ai": ai_probability(logits.float().tolist(), ai_index)}
+            values = logits.float().tolist()
+            return {
+                "ai": ai_probability(values, ai_index),
+                "label": _raw_label(values, ai_index, classifier.config),
+            }
 
         return predict
 
@@ -485,6 +540,15 @@ def _looks_gated(error: Exception) -> bool:
         hint in text
         for hint in ("gated", "401", "403", "awaiting a review", "access to model")
     )
+
+
+def _raw_label(logits: list[float], ai_index: int | None, config: object) -> str:
+    """The label the model itself would report, shown under --verbose."""
+    if len(logits) == 1:
+        threshold = 0.5
+        return "ai" if ai_probability(logits, ai_index) >= threshold else "human"
+    winner = max(range(len(logits)), key=lambda index: logits[index])
+    return str(getattr(config, "id2label", {}).get(winner, winner))
 
 
 def _token_limit(tokenizer: object, config: object) -> int:

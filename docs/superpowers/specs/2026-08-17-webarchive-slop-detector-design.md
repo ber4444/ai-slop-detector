@@ -55,8 +55,9 @@ First invocation bootstraps the Python environment and downloads required weight
 ## Failure Policy
 
 - Invalid or unreadable archives fail before model startup, with a nonzero exit code.
-- Missing Python, virtual-environment setup failures, missing token, inaccessible gated repositories, and text-model errors fail nonzero and name the cause/model.
-- If `--images` is used, a malformed or unsupported individual image is skipped and shown in the report; successful text results remain available.
+- Missing Python, virtual-environment setup failures, and a missing token fail nonzero and name the cause before any model loads.
+- An individual text model that cannot run — an inaccessible gated repository, a download failure, a model error — is reported as unavailable with its reason, and the detectors that did run are still reported. The run fails nonzero only when no text detector produced a score.
+- If `--images` is used, a malformed or unsupported individual image is skipped and shown in the report; an image model that cannot load skips every image. Successful text results remain available either way.
 - An unavailable MPS device falls back to CPU and warns about slower execution.
 - No archive contents, scores, tokens, or image bytes are logged by default.
 

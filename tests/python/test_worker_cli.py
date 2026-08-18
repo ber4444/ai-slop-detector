@@ -132,3 +132,55 @@ def test_token_is_read_trimmed_from_the_secrets_directory(monkeypatch, tmp_path)
     monkeypatch.chdir(tmp_path)
 
     assert read_hf_token() == "hf_example"
+
+
+def test_partial_text_results_are_reported_with_a_named_gap(
+    stub_worker, capsys, tmp_path
+):
+    stub_worker.setattr(
+        "slop_detector.main.run_text_detectors",
+        lambda *args: [
+            DetectorResult("Glyph", 0.4, "likely AI-generated", "1 chunk"),
+            DetectorResult("EditLens", None, "estimated AI-edit extent", "gated"),
+        ],
+    )
+
+    assert main(["--archive", str(tmp_path / "page.webarchive")]) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert [result["score"] for result in report["text"]] == [0.4, None]
+    assert any("partial report" in note for note in report["warnings"])
+    assert any("EditLens" in note for note in report["warnings"])
+
+
+def test_a_run_with_no_usable_detector_fails_instead_of_reporting_nothing(
+    stub_worker, capsys, tmp_path
+):
+    stub_worker.setattr(
+        "slop_detector.main.run_text_detectors",
+        lambda *args: [
+            DetectorResult("Glyph", None, "likely AI-generated", "gated repository"),
+            DetectorResult("EditLens", None, "estimated AI-edit extent", "gated"),
+        ],
+    )
+
+    assert main(["--archive", str(tmp_path / "page.webarchive")]) == 1
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "No text detector could run" in captured.err
+    assert "Glyph" in captured.err
+
+
+def test_a_complete_run_says_nothing_about_partial_results(
+    stub_worker, capsys, tmp_path
+):
+    stub_worker.setattr(
+        "slop_detector.main.run_text_detectors",
+        lambda *args: [DetectorResult("Glyph", 0.4, "likely AI-generated", "1 chunk")],
+    )
+
+    main(["--archive", str(tmp_path / "page.webarchive")])
+
+    warnings = json.loads(capsys.readouterr().out)["warnings"]
+    assert not any("partial report" in note for note in warnings)

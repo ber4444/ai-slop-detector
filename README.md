@@ -83,11 +83,36 @@ kotlin slop-detector.main.kts saved-page.webarchive --images --verbose
 - `--verbose` — adds the device, extraction counts, chunk counts, and skip
   reasons to the notes.
 
+- `--verbose` also reports the raw label each model emitted per chunk, so you
+  can check which output was read as "AI".
+
 Exit codes: `0` success, `2` invalid input (bad arguments or an unreadable
-archive, detected before any model loads), `1` setup or model failure (missing
-Python environment, missing token, inaccessible gated repository, model error).
-With `--images`, a single malformed image is skipped and shown in the report
-rather than failing the run.
+archive, detected before any model loads), `1` setup failure (missing Python
+environment, missing token) or a run in which no detector could produce a score.
+
+### Partial reports
+
+One detector failing does not throw away the others. A text model that cannot
+run — a gated repository you have not been granted, a download failure, a model
+error — is printed as `unavailable` with its reason, the remaining detectors
+keep their scores, and a note names the gap:
+
+```text
+Text detectors
+  Glyph: 8.2% — likely AI-generated (1 chunk)
+  Vanguard: 3.9% — likely AI-generated (1 chunk)
+  EditLens: unavailable
+      pangram/editlens_Llama-3.2-3B: GatedRepoError: 403 Client Error.
+      Accept the access conditions for ... 
+
+Notes:
+  - This is a partial report: EditLens could not run. The remaining results are unaffected.
+```
+
+Such a run still exits `0`, so read the notes rather than the exit code to know
+whether every detector ran. With `--images`, a single malformed image is skipped
+and shown; if the image model itself cannot load, every image is skipped and the
+text results are unaffected.
 
 ## How to read the output
 

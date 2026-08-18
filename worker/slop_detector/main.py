@@ -65,7 +65,14 @@ def build_report(request: RunRequest) -> RunReport:
     device, warnings = select_runtime_device()
     token = read_hf_token()
 
-    text = run_text_detectors(content.text, TransformersLoader(token), device)
+    text = run_text_detectors(
+        content.text, TransformersLoader(token), device, request.verbose
+    )
+    if text and all(result.score is None for result in text):
+        raise RuntimeError(
+            "No text detector could run:\n"
+            + "\n".join(f"{result.name}: {result.detail}" for result in text)
+        )
     images = (
         run_image_detector(content.images, TransformersLoader(token), device)
         if request.include_images
@@ -73,12 +80,27 @@ def build_report(request: RunRequest) -> RunReport:
     )
 
     notes = list(warnings)
+    notes.extend(_unavailable_notes(text, images))
     if request.verbose:
         notes.extend(_verbose_notes(content, device, request))
     notes.extend(ADVISORY_NOTES)
     if request.include_images:
         notes.extend(IMAGE_NOTES)
     return RunReport(text=text, images=images, warnings=notes)
+
+
+def _unavailable_notes(text: list, images: list) -> list[str]:
+    """Say plainly that this is a partial report, and which detectors are missing."""
+    missing = [result.name for result in text if result.score is None]
+    if images and all(image.skipped_reason for image in images):
+        missing.append("the image detector")
+    if not missing:
+        return []
+    return [
+        "This is a partial report: "
+        + ", ".join(missing)
+        + " could not run. The remaining results are unaffected."
+    ]
 
 
 def _verbose_notes(content: object, device: str, request: RunRequest) -> list[str]:

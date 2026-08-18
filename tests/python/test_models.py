@@ -194,3 +194,80 @@ def test_each_detector_is_chunked_to_its_own_token_window():
     assert loader.chunk_limits == [1600, 6000]
     glyph, vanguard = results[0], results[1]
     assert int(glyph.detail.split()[0]) > int(vanguard.detail.split()[0])
+
+
+class BrokenLoader(FakeLoader):
+    """Fails the detectors named in `broken`, succeeds for the rest."""
+
+    def __init__(self, *broken, image_load_error=None):
+        super().__init__()
+        self.broken = set(broken)
+        self.image_load_error = image_load_error
+
+    def load_text(self, model, device):
+        if model.name in self.broken:
+            raise RuntimeError(f"{model.model_id}: gated repository")
+        return super().load_text(model, device)
+
+    def load_editlens(self, base_id, adapter_id, device):
+        if "EditLens" in self.broken:
+            raise RuntimeError(f"{adapter_id}: gated repository\nAccept the terms.")
+        return super().load_editlens(base_id, adapter_id, device)
+
+    def load_image(self, model_id, device):
+        if self.image_load_error is not None:
+            raise self.image_load_error
+        return super().load_image(model_id, device)
+
+
+def test_a_gated_detector_does_not_discard_the_detectors_that_ran():
+    results = run_text_detectors("A sentence.", BrokenLoader("EditLens"), "mps")
+
+    scored = {result.name: result.score for result in results}
+    assert scored["Glyph"] == 0.8
+    assert scored["Vanguard"] == 0.8
+    assert scored["EditLens"] is None
+
+
+def test_an_unavailable_detector_keeps_the_guidance_its_error_carried():
+    results = run_text_detectors("A sentence.", BrokenLoader("EditLens"), "mps")
+
+    editlens = next(result for result in results if result.name == "EditLens")
+    assert "gated repository" in editlens.detail
+    assert "Accept the terms." in editlens.detail
+    assert editlens.label == "estimated AI-edit extent"
+
+
+def test_every_detector_can_fail_independently():
+    results = run_text_detectors(
+        "A sentence.", BrokenLoader("Glyph", "Vanguard", "EditLens"), "cpu"
+    )
+
+    assert [result.score for result in results] == [None, None, None]
+
+
+def test_an_unloadable_image_model_skips_images_but_keeps_their_metadata(png_bytes):
+    loader = BrokenLoader(image_load_error=RuntimeError("Organika: gated repository"))
+
+    results = run_image_detector(
+        [EmbeddedImage(0, "image/png", png_bytes(Software="Stable Diffusion"))],
+        loader,
+        "mps",
+    )
+
+    assert results[0].score is None
+    assert "gated repository" in results[0].skipped_reason
+    assert results[0].metadata_flags == ["Software: Stable Diffusion"]
+
+
+def test_verbose_adds_the_raw_labels_the_model_emitted():
+    class LabellingLoader(FakeLoader):
+        def load_text(self, model, device):
+            super().load_text(model, device)
+            return lambda chunk: {"ai": 0.8, "label": "LABEL_1"}
+
+    quiet = run_text_detectors("A sentence.", LabellingLoader(), "cpu")
+    loud = run_text_detectors("A sentence.", LabellingLoader(), "cpu", verbose=True)
+
+    assert quiet[0].detail == "1 chunk"
+    assert loud[0].detail == "1 chunk; raw labels LABEL_1x1"

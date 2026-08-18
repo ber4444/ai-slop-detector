@@ -14,7 +14,8 @@ class RunRequest:
 @dataclass(frozen=True)
 class DetectorResult:
     name: str
-    score: float
+    #: None when the detector could not run; `detail` then carries the reason.
+    score: float | None
     label: str
     detail: str
 
