@@ -1,2 +1,2 @@
-"""Local webarchive AI-content detector worker."""
+"""Local Markdown AI-content detector worker."""
 
