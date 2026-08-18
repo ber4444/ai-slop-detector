@@ -10,12 +10,15 @@ from .contracts import RunReport, RunRequest
 from .models import (
     EDITLENS_NAME,
     TransformersLoader,
+    chunk_sources,
     compare_detectors,
+    mean_score,
     run_image_detector,
     run_text_detectors,
     select_runtime_device,
 )
-from .webarchive import parse_webarchive
+from .sources import load_sources
+from .webarchive import EmbeddedImage
 
 
 TOKEN_RELATIVE_PATH = Path(".secrets/huggingface.token")
@@ -75,35 +78,82 @@ def read_hf_token() -> str:
 
 
 def build_report(request: RunRequest) -> RunReport:
-    """Parse the archive and run the requested detectors sequentially."""
-    content = parse_webarchive(Path(request.archive_path))
+    """Read every input and run the requested detectors sequentially."""
+    sources = load_sources([Path(path) for path in request.paths])
+    chunks = chunk_sources(sources)
+    images = _collect_images(sources)
     device, warnings = select_runtime_device()
     token = read_hf_token()
 
     text = run_text_detectors(
-        content.text, TransformersLoader(token), device, request.verbose
+        chunks, TransformersLoader(token), device, request.verbose
     )
     if text and all(result.score is None for result in text):
         raise RuntimeError(
             "No text detector could run:\n"
             + "\n".join(f"{result.name}: {result.detail}" for result in text)
         )
-    images = (
-        run_image_detector(content.images, TransformersLoader(token), device)
+    image_results = (
+        run_image_detector(images, TransformersLoader(token), device)
         if request.include_images
         else []
     )
 
     notes = list(warnings)
-    notes.extend(_unavailable_notes(text, images))
+    notes.extend(_unavailable_notes(text, image_results))
+    notes.extend(_scope_notes(sources, chunks))
     notes.extend(_agreement_notes(text, request.verbose))
     notes.extend(ADVISORY_NOTES)
     if request.include_images:
         notes.extend(IMAGE_NOTES)
     if request.verbose:
         notes.extend(VERBOSE_NOTES)
-        notes.extend(_verbose_notes(content, device, request))
-    return RunReport(text=text, images=images, warnings=notes)
+        notes.extend(_per_file_notes(chunks, text))
+        notes.extend(_verbose_notes(sources, images, device, request))
+    return RunReport(text=text, images=image_results, warnings=notes)
+
+
+def _collect_images(sources: list) -> list[EmbeddedImage]:
+    """Number every embedded image across all inputs in one sequence."""
+    images = []
+    for source in sources:
+        for image in source.images:
+            images.append(EmbeddedImage(len(images), image.mime_type, image.data))
+    return images
+
+
+def _scope_notes(sources: list, chunks: list) -> list[str]:
+    """Say what a collective score was taken over, when there is more than one file."""
+    if len(sources) < 2:
+        return []
+    return [
+        f"This is one collective answer for {len(sources)} files, pooled over "
+        f"{len(chunks)} sections of text. A single badly written file can move "
+        f"it; --verbose breaks the answer down per file."
+    ]
+
+
+def _per_file_notes(chunks: list, text: list) -> list[str]:
+    """Break a collective score back down into the files behind it."""
+    names = list(dict.fromkeys(chunk.source for chunk in chunks))
+    if len(names) < 2:
+        return []
+
+    notes = []
+    for result in text:
+        if not result.chunk_scores:
+            continue
+        parts = []
+        for name in names:
+            scores = [
+                score
+                for chunk, score in zip(chunks, result.chunk_scores)
+                if chunk.source == name
+            ]
+            if scores:
+                parts.append(f"{Path(name).name} {mean_score(scores) * 100:.0f}%")
+        notes.append(f"{result.name} per file: " + ", ".join(parts))
+    return notes
 
 
 def _agreement_notes(text: list, verbose: bool) -> list[str]:
@@ -183,12 +233,16 @@ def _unavailable_notes(text: list, images: list) -> list[str]:
     ]
 
 
-def _verbose_notes(content: object, device: str, request: RunRequest) -> list[str]:
-    """Report extraction counts without echoing any archive content."""
-    embedded = len(content.images)
+def _verbose_notes(
+    sources: list, images: list, device: str, request: RunRequest
+) -> list[str]:
+    """Report extraction counts without echoing any input content."""
+    embedded = len(images)
+    characters = sum(len(source.text) for source in sources)
     notes = [
         f"Device: {device}.",
-        f"Extracted {len(content.text)} characters of readable text.",
+        f"Read {len(sources)} file(s).",
+        f"Extracted {characters} characters of readable text.",
         f"Found {embedded} embedded raster image(s).",
     ]
     if embedded and not request.include_images:
@@ -199,15 +253,15 @@ def _verbose_notes(content: object, device: str, request: RunRequest) -> list[st
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="slop_detector.main",
-        description="Analyze a macOS .webarchive for likely AI-generated content.",
+        description="Analyze .webarchive or Markdown files for likely AI-generated content.",
     )
-    parser.add_argument("--archive", required=True, type=Path)
+    parser.add_argument("--input", required=True, action="append", type=Path)
     parser.add_argument("--images", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
 
     request = RunRequest(
-        archive_path=str(args.archive),
+        paths=[str(path) for path in args.input],
         include_images=args.images,
         verbose=args.verbose,
     )

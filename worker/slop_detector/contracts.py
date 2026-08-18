@@ -6,7 +6,8 @@ import json
 
 @dataclass(frozen=True)
 class RunRequest:
-    archive_path: str
+    #: One or more input files: .webarchive or Markdown.
+    paths: list[str]
     include_images: bool
     verbose: bool
 

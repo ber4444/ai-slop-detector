@@ -14,8 +14,16 @@ from slop_detector.models import (
     run_text_detectors,
     select_device,
 )
-from slop_detector.models import TEXT_MODELS
+from slop_detector.models import TEXT_MODELS, chunk_sources
+from slop_detector.sources import Source
 from slop_detector.webarchive import EmbeddedImage
+
+
+def detect(text, loader, device="cpu", verbose=False):
+    """Score one document, the way the worker does, from raw text."""
+    return run_text_detectors(
+        chunk_sources([Source("test.md", text)]), loader, device, verbose
+    )
 
 
 def test_chunk_text_keeps_sentences_and_honors_the_limit():
@@ -89,7 +97,7 @@ class FakeLoader:
 def test_text_detectors_run_sequentially_and_keep_their_distinct_meaning():
     loader = FakeLoader()
 
-    results = run_text_detectors("A short sentence.", loader, "mps")
+    results = detect("A short sentence.", loader, "mps")
 
     assert [result.name for result in results] == ["Glyph", "Vanguard", "EditLens"]
     assert [result.score for result in results] == [0.8, 0.8, 0.5]
@@ -105,7 +113,7 @@ def test_text_detectors_run_sequentially_and_keep_their_distinct_meaning():
 def test_text_detectors_report_empty_text_without_calling_a_model():
     loader = FakeLoader()
 
-    results = run_text_detectors("   ", loader, "cpu")
+    results = detect("   ", loader, "cpu")
 
     assert loader.loaded == []
     assert [result.detail for result in results] == ["no readable text"] * 3
@@ -194,7 +202,7 @@ def test_every_detector_scores_one_shared_partition():
     loader = FakeLoader()
     text = "Sentence number one. " * 400
 
-    results = run_text_detectors(text, loader, "cpu")
+    results = detect(text, loader)
 
     partitions = list(loader.chunks_seen.values())
     assert len(partitions) == 3
@@ -229,7 +237,7 @@ class BrokenLoader(FakeLoader):
 
 
 def test_a_gated_detector_does_not_discard_the_detectors_that_ran():
-    results = run_text_detectors("A sentence.", BrokenLoader("EditLens"), "mps")
+    results = detect("A sentence.", BrokenLoader("EditLens"), "mps")
 
     scored = {result.name: result.score for result in results}
     assert scored["Glyph"] == 0.8
@@ -238,9 +246,7 @@ def test_a_gated_detector_does_not_discard_the_detectors_that_ran():
 
 
 def test_an_unavailable_detector_keeps_the_guidance_its_error_carried():
-    results = run_text_detectors(
-        "A sentence.", BrokenLoader("EditLens"), "mps", verbose=True
-    )
+    results = detect("A sentence.", BrokenLoader("EditLens"), "mps", verbose=True)
 
     editlens = next(result for result in results if result.name == "EditLens")
     assert "gated repository" in editlens.detail
@@ -249,14 +255,14 @@ def test_an_unavailable_detector_keeps_the_guidance_its_error_carried():
 
 
 def test_a_quiet_report_shows_only_the_actionable_line_of_a_failure():
-    results = run_text_detectors("A sentence.", BrokenLoader("EditLens"), "mps")
+    results = detect("A sentence.", BrokenLoader("EditLens"), "mps")
 
     editlens = next(result for result in results if result.name == "EditLens")
     assert editlens.detail == "Accept the terms."
 
 
 def test_every_detector_can_fail_independently():
-    results = run_text_detectors(
+    results = detect(
         "A sentence.", BrokenLoader("Glyph", "Vanguard", "EditLens"), "cpu"
     )
 
@@ -283,8 +289,8 @@ def test_verbose_exposes_the_spread_the_mean_hides():
             super().load_text(model, device)
             return lambda chunk: {"ai": 0.8, "label": "LABEL_1"}
 
-    quiet = run_text_detectors("A sentence.", LabellingLoader(), "cpu")
-    loud = run_text_detectors("A sentence.", LabellingLoader(), "cpu", verbose=True)
+    quiet = detect("A sentence.", LabellingLoader(), "cpu")
+    loud = detect("A sentence.", LabellingLoader(), "cpu", verbose=True)
 
     assert quiet[0].detail == "1 chunk"
     assert "per-chunk 0.80-0.80" in loud[0].detail
@@ -325,14 +331,14 @@ def test_a_scored_detector_is_labelled_with_its_verdict_not_a_fixed_string():
             super().load_text(model, device)
             return lambda chunk: {"ai": 0.216}
 
-    results = run_text_detectors("A sentence.", HumanishLoader(), "cpu")
+    results = detect("A sentence.", HumanishLoader(), "cpu")
 
     assert results[0].label == "probably human"
     assert results[1].label == "probably human"
 
 
 def test_detectors_carry_their_per_chunk_scores_for_comparison():
-    results = run_text_detectors("One. Two. Three.", FakeLoader(), "cpu")
+    results = detect("One. Two. Three.", FakeLoader(), "cpu")
 
     assert results[0].chunk_scores == [0.8]
     assert results[1].chunk_scores == [0.8]
@@ -340,7 +346,7 @@ def test_detectors_carry_their_per_chunk_scores_for_comparison():
 
 
 def test_an_unavailable_detector_carries_no_chunk_scores():
-    results = run_text_detectors("A sentence.", BrokenLoader("EditLens"), "cpu")
+    results = detect("A sentence.", BrokenLoader("EditLens"), "cpu")
 
     assert results[2].chunk_scores == []
 

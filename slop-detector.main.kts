@@ -13,7 +13,13 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-val USAGE = "Usage: kotlin slop-detector.main.kts <archive.webarchive> [--images] [--verbose]"
+val USAGE = """
+Usage: kotlin slop-detector.main.kts <file|glob|directory>... [--images] [--verbose]
+
+  Accepts .webarchive and Markdown (.md, .markdown, .mdown, .mkd) files.
+  Several inputs, a glob such as '*.md', or a directory are scored together
+  as one collective answer; --verbose breaks it down per file.
+""".trim()
 val KNOWN_FLAGS = setOf("--images", "--verbose")
 
 val repoRoot: File = File(System.getProperty("user.dir")).absoluteFile
@@ -64,6 +70,28 @@ fun bootstrapPython() {
     }
 }
 
+val TEXT_SUFFIXES = listOf(".webarchive", ".md", ".markdown", ".mdown", ".mkd")
+
+fun File.isSupported(): Boolean = TEXT_SUFFIXES.any { name.lowercase().endsWith(it) }
+
+/** Expand one argument into the files it names: a glob, a directory, or a file. */
+fun expand(argument: String): List<File> {
+    val direct = File(argument)
+    if (direct.isDirectory) {
+        return direct.walkTopDown().filter { it.isFile && it.isSupported() }.sortedBy { it.path }.toList()
+    }
+    if (!argument.contains('*') && !argument.contains('?')) return listOf(direct)
+
+    // The shell leaves a quoted glob unexpanded, so expand it here rather than
+    // making the user remember which form they used.
+    val pattern = File(argument)
+    val parent = pattern.parentFile ?: File(".")
+    val matcher = java.nio.file.FileSystems.getDefault().getPathMatcher("glob:${pattern.name}")
+    return (parent.listFiles() ?: emptyArray())
+        .filter { it.isFile && matcher.matches(File(it.name).toPath()) }
+        .sortedBy { it.path }
+}
+
 fun percent(value: Double): String = String.format(Locale.ROOT, "%.1f%%", value * 100)
 
 fun JsonObject.text(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
@@ -72,7 +100,7 @@ fun JsonObject.whole(key: String): Int? = this[key]?.jsonPrimitive?.intOrNull
 fun JsonObject.strings(key: String): List<String> =
     this[key]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
 
-fun renderReport(payload: String, archive: String, verbose: Boolean) {
+fun renderReport(payload: String, inputs: List<File>, verbose: Boolean) {
     val report = try {
         Json.parseToJsonElement(payload).jsonObject
     } catch (error: Exception) {
@@ -81,7 +109,15 @@ fun renderReport(payload: String, archive: String, verbose: Boolean) {
 
     // Without --verbose the report is prose: a reader who does not work with
     // these models gets the plain reading, not the percentage behind it.
-    val lines = mutableListOf("Archive: $archive", "", "What the text detectors think")
+    val lines = mutableListOf<String>()
+    lines += if (inputs.size == 1) {
+        "Read: ${inputs.single().path}"
+    } else {
+        "Read: ${inputs.size} files, scored together as one answer"
+    }
+    if (inputs.size > 1 && verbose) inputs.forEach { lines += "  ${it.path}" }
+    lines += ""
+    lines += "What the text detectors think"
     val detectors = report["text"]?.jsonArray.orEmpty()
     if (detectors.isEmpty()) {
         lines += "  (no text detector results)"
@@ -154,15 +190,25 @@ val unknown = options.filter { it.startsWith("-") && it !in KNOWN_FLAGS }
 if (unknown.isNotEmpty()) fail("Unknown option: ${unknown.first()}\n$USAGE", 2)
 
 val positional = options.filterNot { it.startsWith("-") }
-if (positional.size != 1) fail(USAGE, 2)
-val archive = positional.single()
-if (!archive.endsWith(".webarchive")) fail("Expected a .webarchive file: $archive", 2)
+if (positional.isEmpty()) fail(USAGE, 2)
+
+val inputs = positional.flatMap { expand(it) }.distinctBy { it.absolutePath }
+if (inputs.isEmpty()) fail("No matching files: ${positional.joinToString(" ")}", 2)
+val unsupported = inputs.filterNot { it.isSupported() }
+if (unsupported.isNotEmpty()) {
+    fail(
+        "Unsupported file type: ${unsupported.first().path}\n" +
+            "Expected one of: ${TEXT_SUFFIXES.joinToString(", ")}",
+        2,
+    )
+}
 
 if (!skipBootstrap) bootstrapPython()
 
 val python = System.getenv("SLOP_DETECTOR_PYTHON") ?: venvPython.path
 val workerDirectory = File(repoRoot, "worker")
-val command = listOf(python, "-m", "slop_detector.main", "--archive", File(archive).absolutePath) +
+val command = listOf(python, "-m", "slop_detector.main") +
+    inputs.flatMap { listOf("--input", it.absolutePath) } +
     options.filter { it in KNOWN_FLAGS }
 
 val builder = ProcessBuilder(command)
@@ -179,4 +225,4 @@ val payload = process.inputStream.bufferedReader().readText()
 val code = process.waitFor()
 if (code != 0) exitProcess(code)
 
-renderReport(payload, archive, options.contains("--verbose"))
+renderReport(payload, inputs, options.contains("--verbose"))

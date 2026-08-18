@@ -93,7 +93,7 @@ def test_kotlin_cli_renders_worker_report_and_forwards_images_flag(tmp_path):
     assert "Detector scores are advisory." in result.stdout
     arguments = received.read_text()
     assert "--images" in arguments
-    assert "--archive" in arguments
+    assert "--input" in arguments
 
 
 def test_kotlin_cli_keeps_image_scores_metadata_and_skips_in_separate_sections(
@@ -173,3 +173,96 @@ def test_kotlin_cli_renders_an_unavailable_detector_with_its_reason(tmp_path):
     assert "GatedRepoError: 403" in result.stdout
     assert "Accept the access conditions for both model pages." in result.stdout
     assert "This is a partial report: EditLens could not run." in result.stdout
+
+
+def test_kotlin_cli_forwards_every_markdown_file_a_glob_matches(tmp_path):
+    for name in ("alpha.md", "beta.md", "gamma.md"):
+        (tmp_path / name).write_text("# Title\n\nSome prose.\n")
+    (tmp_path / "ignored.txt").write_text("not markdown")
+
+    executable, received = fake_python(tmp_path)
+    result = subprocess.run(
+        ["kotlin", SCRIPT, str(tmp_path / "*.md")],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "SLOP_DETECTOR_PYTHON": str(executable),
+            "SLOP_DETECTOR_SKIP_BOOTSTRAP": "1",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    arguments = received.read_text()
+    assert arguments.count("--input") == 3
+    assert "alpha.md" in arguments and "gamma.md" in arguments
+    assert "ignored.txt" not in arguments
+    assert "3 files, scored together as one answer" in result.stdout
+
+
+def test_kotlin_cli_walks_a_directory_for_supported_files(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "one.md").write_text("prose")
+    (tmp_path / "docs" / "nested").mkdir()
+    (tmp_path / "docs" / "nested" / "two.markdown").write_text("prose")
+    (tmp_path / "docs" / "skip.png").write_bytes(b"\x89PNG")
+
+    executable, received = fake_python(tmp_path)
+    result = subprocess.run(
+        ["kotlin", SCRIPT, str(tmp_path / "docs")],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "SLOP_DETECTOR_PYTHON": str(executable),
+            "SLOP_DETECTOR_SKIP_BOOTSTRAP": "1",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    arguments = received.read_text()
+    assert arguments.count("--input") == 2
+    assert "two.markdown" in arguments
+    assert "skip.png" not in arguments
+
+
+def test_kotlin_cli_accepts_a_single_markdown_file(tmp_path):
+    note = tmp_path / "note.md"
+    note.write_text("prose")
+
+    executable, received = fake_python(tmp_path)
+    result = subprocess.run(
+        ["kotlin", SCRIPT, str(note)],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "SLOP_DETECTOR_PYTHON": str(executable),
+            "SLOP_DETECTOR_SKIP_BOOTSTRAP": "1",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"Read: {note}" in result.stdout
+
+
+def test_kotlin_cli_reports_a_glob_that_matches_nothing(tmp_path):
+    executable, received = fake_python(tmp_path)
+    result = subprocess.run(
+        ["kotlin", SCRIPT, str(tmp_path / "*.md")],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        env={
+            **os.environ,
+            "SLOP_DETECTOR_PYTHON": str(executable),
+            "SLOP_DETECTOR_SKIP_BOOTSTRAP": "1",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "No matching files" in result.stderr
+    assert not received.exists()

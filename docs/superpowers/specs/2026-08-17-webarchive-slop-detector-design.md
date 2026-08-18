@@ -27,9 +27,12 @@ This hybrid boundary keeps the user-facing command Kotlin while using the suppor
 ## Command Interface
 
 ```text
-./slop-detector.main.kts <archive.webarchive> [--images] [--verbose]
+./slop-detector.main.kts <file|glob|directory>... [--images] [--verbose]
 ```
 
+- Inputs are macOS `.webarchive` files or Markdown (`.md`, `.markdown`, `.mdown`, `.mkd`). A glob is expanded by the tool when the shell has not expanded it, and a directory is walked recursively for supported files.
+- Several inputs produce one collective answer: every file is chunked, the chunks are pooled, and each detector's score is the mean over the pool. Chunks never span a file boundary, so `--verbose` can attribute the answer back to individual files.
+- Markdown is reduced to prose before scoring: fenced code, front matter, link targets, image references, table rules, and HTML are removed; heading, link, list, and quotation text is kept. Markdown references rather than embeds images, so `--images` finds nothing to evaluate in it.
 - The default path extracts and analyzes readable text only.
 - `--images` enables embedded-image extraction, the image detector, and image metadata inspection.
 - `--verbose` adds extraction counts, chunk counts, raw detector labels, and skip reasons.

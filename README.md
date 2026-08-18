@@ -1,13 +1,50 @@
 # Webarchive Slop Detector
 
-A personal, local-first command that examines one macOS `.webarchive` file for
-likely AI-generated text and, on request, likely AI-generated images. Everything
-runs on your own machine: after the first model download, no archive content
-leaves the computer and no remote inference API is used.
+A personal, local-first command that examines saved web pages
+(macOS `.webarchive`) and Markdown files for likely AI-generated text and, on
+request, likely AI-generated images. Everything runs on your own machine: after
+the first model download, no content leaves the computer and no remote
+inference API is used.
 
 ```bash
 kotlin slop-detector.main.kts saved-page.webarchive
 ```
+
+```bash
+kotlin slop-detector.main.kts docs/*.md
+```
+
+## Scanning several files
+
+Give it more than one file and you get **one collective answer**, not one per
+file. Every file is split into sections, all the sections are pooled, and each
+detector's percentage is the mean over that pool. Sections never span a file
+boundary, so each one is still attributable.
+
+That means a long file weighs more than a short one, which is usually what you
+want when asking "is this documentation set full of slop?" — and it means one
+bad file can move the answer. `--verbose` breaks it back down:
+
+```text
+Read: 2 files, scored together as one answer
+
+What the text detectors think
+  Glyph: 17.8% — probably human (13 chunks; per-chunk 0.01-0.92, median 0.02, 2/13 over 0.50)
+
+Notes:
+  - Glyph per file: plan.md 12%, design.md 31%
+```
+
+### What gets read from Markdown
+
+Only prose. Fenced code blocks, YAML front matter, link targets, image
+references, table rules, and HTML are removed before scoring; heading text,
+link text, list items, and quotations are kept. Scoring a code block would
+measure the writer's toolchain rather than their writing.
+
+Markdown references images rather than embedding them, so `--images` has
+nothing to evaluate in a Markdown file. It still works for `.webarchive`
+inputs, including when both kinds are scanned together.
 
 ## What it reports
 
@@ -70,12 +107,30 @@ download is required.
 ## Usage
 
 ```bash
-kotlin slop-detector.main.kts saved-page.webarchive
+kotlin slop-detector.main.kts saved-page.webarchive --images --verbose
+```
+
+Inputs may be `.webarchive` or Markdown (`.md`, `.markdown`, `.mdown`, `.mkd`),
+in any combination:
+
+```bash
+kotlin slop-detector.main.kts notes.md
 ```
 
 ```bash
-kotlin slop-detector.main.kts saved-page.webarchive --images --verbose
+kotlin slop-detector.main.kts docs/*.md
 ```
+
+```bash
+kotlin slop-detector.main.kts 'docs/*.md'
+```
+
+```bash
+kotlin slop-detector.main.kts docs
+```
+
+A glob works whether or not your shell expands it — quoted globs are expanded
+by the tool. A directory is walked recursively for supported files.
 
 - default — extracts and analyzes readable text only.
 - `--images` — also extracts embedded raster images, runs the image detector,

@@ -95,6 +95,28 @@ IMAGE_MODEL = "Organika/sdxl-detector"
 NO_TEXT_DETAIL = "no readable text"
 
 
+@dataclass(frozen=True)
+class Chunk:
+    """One unit of text every detector scores, and the file it came from."""
+
+    source: str
+    text: str
+
+
+def chunk_sources(sources: list) -> list[Chunk]:
+    """Pool every file into one partition, without spanning file boundaries.
+
+    Chunks never straddle two files, so a collective score is the mean over
+    comparable units and each chunk can still be attributed to its file.
+    """
+    limit = shared_chunk_characters()
+    return [
+        Chunk(source=source.name, text=text)
+        for source in sources
+        for text in chunk_text(source.text, limit)
+    ]
+
+
 def shared_chunk_characters() -> int:
     """One partition for every detector, sized for the narrowest token window.
 
@@ -278,7 +300,7 @@ class ModelLoader(Protocol):
 
 
 def run_text_detectors(
-    text: str, loader: ModelLoader, device: str, verbose: bool = False
+    chunks: list[Chunk], loader: ModelLoader, device: str, verbose: bool = False
 ) -> list[DetectorResult]:
     """Run every text detector sequentially, keeping their meanings distinct.
 
@@ -286,17 +308,17 @@ def run_text_detectors(
     directly comparable. A detector that cannot run is reported with no score
     and the reason, so the detectors that did run stay available.
     """
-    chunks = chunk_text(text, shared_chunk_characters())
     if not chunks:
         return [
             DetectorResult(model.name, 0.0, NOT_ASSESSED_LABEL, NO_TEXT_DETAIL)
             for model in TEXT_MODELS
         ] + [DetectorResult(EDITLENS_NAME, 0.0, NOT_ASSESSED_LABEL, NO_TEXT_DETAIL)]
 
+    passages = [chunk.text for chunk in chunks]
     results: list[DetectorResult] = []
     for model in TEXT_MODELS:
-        results.append(_score_text_model(chunks, model, loader, device, verbose))
-    results.append(_score_editlens(chunks, loader, device, verbose))
+        results.append(_score_text_model(passages, model, loader, device, verbose))
+    results.append(_score_editlens(passages, loader, device, verbose))
     return results
 
 

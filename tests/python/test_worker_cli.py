@@ -4,16 +4,22 @@ import pytest
 
 from slop_detector.contracts import DetectorResult, ImageResult
 from slop_detector.main import main, read_hf_token
+from slop_detector.models import Chunk
 
 
-def fake_content(text="Text.", images=(object(),)):
-    return type("Content", (), {"text": text, "images": list(images)})()
+def fake_source(name="page.webarchive", text="Text.", images=(object(),)):
+    return type("Source", (), {"name": name, "text": text, "images": list(images)})()
 
 
 @pytest.fixture
 def stub_worker(monkeypatch):
-    """Replace archive parsing, device selection, and models with stubs."""
-    monkeypatch.setattr("slop_detector.main.parse_webarchive", lambda _: fake_content())
+    """Replace input reading, device selection, and models with stubs."""
+    monkeypatch.setattr("slop_detector.main.load_sources", lambda _: [fake_source()])
+    monkeypatch.setattr(
+        "slop_detector.main.chunk_sources",
+        lambda sources: [Chunk(source=s.name, text=s.text) for s in sources],
+    )
+    monkeypatch.setattr("slop_detector.main._collect_images", lambda sources: [object()])
     monkeypatch.setattr("slop_detector.main.select_runtime_device", lambda: ("mps", []))
     monkeypatch.setattr("slop_detector.main.read_hf_token", lambda: "token")
     monkeypatch.setattr("slop_detector.main.TransformersLoader", lambda token: object())
@@ -24,7 +30,7 @@ def stub_worker(monkeypatch):
 def test_worker_emits_machine_readable_report_without_images(
     stub_worker, capsys, tmp_path
 ):
-    assert main(["--archive", str(tmp_path / "page.webarchive")]) == 0
+    assert main(["--input", str(tmp_path / "page.webarchive")]) == 0
 
     assert json.loads(capsys.readouterr().out)["images"] == []
 
@@ -38,7 +44,7 @@ def test_worker_reports_individual_bad_images_without_discarding_text(
         lambda *args: [ImageResult(0, None, None, [], "OSError: broken")],
     )
 
-    assert main(["--archive", str(tmp_path / "page.webarchive"), "--images"]) == 0
+    assert main(["--input", str(tmp_path / "page.webarchive"), "--images"]) == 0
 
     images = json.loads(capsys.readouterr().out)["images"]
     assert images == [
@@ -53,7 +59,7 @@ def test_worker_reports_individual_bad_images_without_discarding_text(
 
 
 def test_worker_always_prints_the_advisory_notes(stub_worker, capsys, tmp_path):
-    main(["--archive", str(tmp_path / "page.webarchive")])
+    main(["--input", str(tmp_path / "page.webarchive")])
 
     warnings = json.loads(capsys.readouterr().out)["warnings"]
     assert any("guesses, not proof" in warning for warning in warnings)
@@ -67,9 +73,9 @@ def test_worker_reports_verbose_extraction_counts_only_when_asked(
         lambda *args: [DetectorResult("Glyph", 0.5, "likely AI-generated", "1 chunk")],
     )
 
-    main(["--archive", str(tmp_path / "page.webarchive"), "--verbose"])
+    main(["--input", str(tmp_path / "page.webarchive"), "--verbose"])
     verbose = json.loads(capsys.readouterr().out)["warnings"]
-    main(["--archive", str(tmp_path / "page.webarchive")])
+    main(["--input", str(tmp_path / "page.webarchive")])
     quiet = json.loads(capsys.readouterr().out)["warnings"]
 
     assert any("characters of readable text" in warning for warning in verbose)
@@ -82,9 +88,9 @@ def test_worker_rejects_an_invalid_archive_with_exit_code_two(
     def refuse(_):
         raise ValueError("Invalid webarchive: not a plist")
 
-    stub_worker.setattr("slop_detector.main.parse_webarchive", refuse)
+    stub_worker.setattr("slop_detector.main.load_sources", refuse)
 
-    assert main(["--archive", str(tmp_path / "page.webarchive")]) == 2
+    assert main(["--input", str(tmp_path / "page.webarchive")]) == 2
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -99,7 +105,7 @@ def test_worker_reports_model_failures_with_exit_code_one(
 
     stub_worker.setattr("slop_detector.main.run_text_detectors", fail)
 
-    assert main(["--archive", str(tmp_path / "page.webarchive")]) == 1
+    assert main(["--input", str(tmp_path / "page.webarchive")]) == 1
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -145,7 +151,7 @@ def test_partial_text_results_are_reported_with_a_named_gap(
         ],
     )
 
-    assert main(["--archive", str(tmp_path / "page.webarchive")]) == 0
+    assert main(["--input", str(tmp_path / "page.webarchive")]) == 0
 
     report = json.loads(capsys.readouterr().out)
     assert [result["score"] for result in report["text"]] == [0.4, None]
@@ -164,7 +170,7 @@ def test_a_run_with_no_usable_detector_fails_instead_of_reporting_nothing(
         ],
     )
 
-    assert main(["--archive", str(tmp_path / "page.webarchive")]) == 1
+    assert main(["--input", str(tmp_path / "page.webarchive")]) == 1
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -180,7 +186,7 @@ def test_a_complete_run_says_nothing_about_partial_results(
         lambda *args: [DetectorResult("Glyph", 0.4, "likely AI-generated", "1 chunk")],
     )
 
-    main(["--archive", str(tmp_path / "page.webarchive")])
+    main(["--input", str(tmp_path / "page.webarchive")])
 
     warnings = json.loads(capsys.readouterr().out)["warnings"]
     assert not any("Not every detector ran" in note for note in warnings)
@@ -197,7 +203,7 @@ def test_agreement_between_detectors_is_reported_as_kappa(
         ],
     )
 
-    main(["--archive", str(tmp_path / "page.webarchive"), "--verbose"])
+    main(["--input", str(tmp_path / "page.webarchive"), "--verbose"])
 
     warnings = json.loads(capsys.readouterr().out)["warnings"]
     agreement = next(note for note in warnings if "kappa" in note)
@@ -214,7 +220,7 @@ def test_editlens_is_left_out_of_the_agreement_statistic(stub_worker, capsys, tm
         ],
     )
 
-    main(["--archive", str(tmp_path / "page.webarchive")])
+    main(["--input", str(tmp_path / "page.webarchive")])
 
     warnings = json.loads(capsys.readouterr().out)["warnings"]
     assert not any("kappa" in note for note in warnings)
@@ -229,7 +235,7 @@ def test_no_agreement_note_when_only_one_detector_scored(stub_worker, capsys, tm
         ],
     )
 
-    main(["--archive", str(tmp_path / "page.webarchive")])
+    main(["--input", str(tmp_path / "page.webarchive")])
 
     warnings = json.loads(capsys.readouterr().out)["warnings"]
     assert not any("kappa" in note for note in warnings)
@@ -246,7 +252,7 @@ def test_agreement_note_refuses_to_read_meaning_into_a_degenerate_kappa(
         ],
     )
 
-    main(["--archive", str(tmp_path / "page.webarchive"), "--verbose"])
+    main(["--input", str(tmp_path / "page.webarchive"), "--verbose"])
 
     warnings = json.loads(capsys.readouterr().out)["warnings"]
     note = next(note for note in warnings if "Glyph and Vanguard" in note)
@@ -266,7 +272,7 @@ def test_quiet_report_says_detectors_contradict_without_naming_a_statistic(
         ],
     )
 
-    main(["--archive", str(tmp_path / "page.webarchive")])
+    main(["--input", str(tmp_path / "page.webarchive")])
 
     warnings = json.loads(capsys.readouterr().out)["warnings"]
     assert not any("kappa" in note for note in warnings)
@@ -284,11 +290,68 @@ def test_quiet_report_keeps_the_mechanics_out_of_the_notes(
         lambda *args: [DetectorResult("Glyph", 0.4, "x", "1 chunk", [0.4])],
     )
 
-    main(["--archive", str(tmp_path / "page.webarchive")])
+    main(["--input", str(tmp_path / "page.webarchive")])
     quiet = json.loads(capsys.readouterr().out)["warnings"]
-    main(["--archive", str(tmp_path / "page.webarchive"), "--verbose"])
+    main(["--input", str(tmp_path / "page.webarchive"), "--verbose"])
     loud = json.loads(capsys.readouterr().out)["warnings"]
 
     assert not any("mean" in note or "%" in note for note in quiet)
     assert any("mean" in note for note in loud)
     assert any("guesses, not proof" in note for note in quiet)
+
+
+def test_a_collective_answer_says_how_many_files_it_covers(
+    stub_worker, capsys, tmp_path
+):
+    stub_worker.setattr(
+        "slop_detector.main.load_sources",
+        lambda _: [fake_source("a.md", "One."), fake_source("b.md", "Two.")],
+    )
+    stub_worker.setattr(
+        "slop_detector.main.run_text_detectors",
+        lambda *args: [DetectorResult("Glyph", 0.4, "x", "2 chunks", [0.2, 0.6])],
+    )
+
+    main(["--input", "a.md", "--input", "b.md"])
+
+    warnings = json.loads(capsys.readouterr().out)["warnings"]
+    note = next(note for note in warnings if "collective answer" in note)
+    assert "2 files" in note
+    assert "2 sections" in note
+
+
+def test_one_file_gets_no_collective_answer_note(stub_worker, capsys, tmp_path):
+    main(["--input", "page.webarchive"])
+
+    warnings = json.loads(capsys.readouterr().out)["warnings"]
+    assert not any("collective answer" in note for note in warnings)
+
+
+def test_verbose_breaks_a_collective_answer_down_per_file(stub_worker, capsys):
+    stub_worker.setattr(
+        "slop_detector.main.load_sources",
+        lambda _: [fake_source("clean.md", "One."), fake_source("sloppy.md", "Two.")],
+    )
+    stub_worker.setattr(
+        "slop_detector.main.run_text_detectors",
+        lambda *args: [DetectorResult("Glyph", 0.5, "x", "2 chunks", [0.02, 0.98])],
+    )
+
+    main(["--input", "clean.md", "--input", "sloppy.md", "--verbose"])
+
+    warnings = json.loads(capsys.readouterr().out)["warnings"]
+    note = next(note for note in warnings if note.startswith("Glyph per file:"))
+    assert "clean.md 2%" in note
+    assert "sloppy.md 98%" in note
+
+
+def test_images_from_several_archives_are_numbered_in_one_sequence(monkeypatch):
+    from slop_detector.main import _collect_images
+    from slop_detector.webarchive import EmbeddedImage
+
+    sources = [
+        fake_source("a", images=[EmbeddedImage(0, "image/png", b"a")]),
+        fake_source("b", images=[EmbeddedImage(0, "image/png", b"b")]),
+    ]
+
+    assert [image.index for image in _collect_images(sources)] == [0, 1]
