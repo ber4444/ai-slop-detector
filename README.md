@@ -7,12 +7,17 @@ the first model download, no content leaves the computer and no remote
 inference API is used.
 
 ```bash
-kotlin slop-detector.main.kts saved-page.webarchive
+% kotlin slop-detector.main.kts ~/KEEP/proposals/*.md
+Read: 92 files, scored together as one answer
+
+What the text detectors think
+  Glyph: probably human
+  Vanguard: almost certainly human
+  EditLens: could not run
+      Accept the access conditions [this one requires approval from the authors on Hugging Face and I got rejected]
 ```
 
-```bash
-kotlin slop-detector.main.kts docs/*.md
-```
+The above shows that as expected, Kotlin language proposals are human generated.
 
 ## Scanning several files
 
